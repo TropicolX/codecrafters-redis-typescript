@@ -54,7 +54,7 @@ export class RESPDecoder {
       }
 
       if (i + bulkLen + 2 > buf.length) return null; // wait for full payload + CRLF
-      const str = buf.slice(i, i + bulkLen).toString('utf8');
+      const str = buf.subarray(i, i + bulkLen).toString('utf8');
       i += bulkLen;
 
       if (buf[i] !== CR || buf[i + 1] !== LF) return null;
