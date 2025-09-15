@@ -4,8 +4,7 @@ import * as net from 'net';
 const server: net.Server = net.createServer((socket: net.Socket) => {
   // Handle connection
   socket.on('data', (data: Buffer) => {
-    const message = data.toString();
-    console.log(message);
+    socket.write('+PONG\r\n');
   });
 });
 
