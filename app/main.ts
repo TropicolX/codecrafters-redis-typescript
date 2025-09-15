@@ -5,9 +5,7 @@ const server: net.Server = net.createServer((socket: net.Socket) => {
   // Handle connection
   socket.on('data', (data: Buffer) => {
     const message = data.toString();
-    if (message.startsWith('PING')) {
-      socket.write('+PONG\r\n');
-    }
+    console.log(message);
   });
 });
 
