@@ -1,78 +1,144 @@
-import * as net from 'net';
+import net from 'node:net';
 import { RESPDecoder } from './resp';
 
-const store = new Map<string, string>(); // simple KV store (no expiry in this stage)
+// Store value + optional expiry time (epoch ms)
+type Entry = { value: string; expiresAt?: number };
+const store = new Map<string, Entry>();
+
+function nowMs() {
+  return Date.now();
+}
+
+function isExpired(e: Entry | undefined): boolean {
+  return !!(e && e.expiresAt !== undefined && nowMs() >= e.expiresAt);
+}
+
+function getFresh(key: string): string | undefined {
+  const e = store.get(key);
+  if (!e) return undefined;
+  if (isExpired(e)) {
+    store.delete(key);
+    return undefined;
+  }
+  return e.value;
+}
+
+// RESP helpers
+function simpleString(s: string): string {
+  return `+${s}\r\n`;
+}
+
+function errorString(s: string): string {
+  return `-${s}\r\n`;
+}
 
 function bulkString(s: string): string {
   const n = Buffer.byteLength(s);
   return `$${n}\r\n${s}\r\n`;
 }
+const NULL_BULK = '$-1\r\n';
 
-// Uncomment this block to pass the first stage
-const server = net.createServer((socket: net.Socket) => {
-  // Handle connection
+const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
   socket.on('data', (chunk) => {
-    const frames = decoder.push(chunk); // each frame is ["COMMAND", ...args]
-    console.log(frames);
+    const frames = decoder.push(chunk); // each: ["COMMAND", ...args]
+
     for (const parts of frames) {
       if (!parts || parts.length === 0 || parts[0] == null) continue;
 
       const cmd = String(parts[0]).toUpperCase();
 
+      // --- PING ---
       if (cmd === 'PING') {
-        // For this stage, simple PONG is fine.
-        socket.write('+PONG\r\n');
+        socket.write(simpleString('PONG'));
         continue;
       }
 
+      // --- ECHO <message> ---
       if (cmd === 'ECHO') {
-        // ECHO <message> -> return <message> as RESP Bulk String
-        const arg = parts[1]; // may be undefined or null
-        if (typeof arg !== 'string') {
-          socket.write("-ERR wrong number of arguments for 'echo' command\r\n");
+        const arg = parts[1];
+        if (typeof arg !== 'string' || parts.length !== 2) {
+          socket.write(
+            errorString("ERR wrong number of arguments for 'echo' command")
+          );
         } else {
-          const byteLen = Buffer.byteLength(arg);
-          socket.write(`$${byteLen}\r\n${arg}\r\n`);
+          socket.write(bulkString(arg));
         }
         continue;
       }
 
+      // --- SET <key> <value> [PX <ms>] ---
       if (cmd === 'SET') {
-        // SET <key> <value>
         const key = parts[1];
         const val = parts[2];
         if (typeof key !== 'string' || typeof val !== 'string') {
-          socket.write("-ERR wrong number of arguments for 'set' command\r\n");
+          socket.write(
+            errorString("ERR wrong number of arguments for 'set' command")
+          );
           continue;
         }
-        // Ignore EX/PX and other options in this stage.
-        store.set(key, val);
-        socket.write('+OK\r\n'); // Simple String
+
+        // Default: no expiry
+        let expiresAt: number | undefined = undefined;
+
+        // Parse optional PX (case-insensitive), allow it anywhere after value in this stage
+        // e.g., ["SET","k","v","PX","100"] or ["SET","k","v","px","100"]
+        for (let i = 3; i < parts.length; i++) {
+          const token = parts[i];
+          if (typeof token === 'string' && token.toUpperCase() === 'PX') {
+            const next = parts[i + 1];
+            if (typeof next !== 'string') {
+              socket.write(errorString('ERR syntax error'));
+              continue;
+            }
+            const ms = Number(next);
+            if (!Number.isFinite(ms) || ms < 0 || !Number.isInteger(ms)) {
+              socket.write(
+                errorString('ERR value is not an integer or out of range')
+              );
+              continue;
+            }
+            expiresAt = nowMs() + ms;
+            i++; // skip the value we just consumed
+          } else {
+            // Ignore any other options in this stage
+          }
+        }
+
+        store.set(key, { value: val, expiresAt });
+        socket.write(simpleString('OK'));
         continue;
       }
 
+      // --- GET <key> ---
       if (cmd === 'GET') {
-        // GET <key>
         const key = parts[1];
-        if (typeof key !== 'string') {
-          socket.write("-ERR wrong number of arguments for 'get' command\r\n");
+        if (typeof key !== 'string' || parts.length !== 2) {
+          socket.write(
+            errorString("ERR wrong number of arguments for 'get' command")
+          );
           continue;
         }
-        const val = store.get(key);
+        const val = getFresh(key);
         if (val === undefined) {
-          socket.write('$-1\r\n'); // Null Bulk String
+          socket.write(NULL_BULK);
         } else {
-          socket.write(bulkString(val)); // Bulk String
+          socket.write(bulkString(val));
         }
         continue;
       }
 
-      // Unknown command
-      socket.write(`-ERR unknown command '${parts[0]}'\r\n`);
+      // --- Unknown command ---
+      socket.write(errorString(`ERR unknown command '${String(parts[0])}'`));
     }
+  });
+
+  socket.on('error', () => {
+    /* ignore for this stage */
   });
 });
 
-server.listen(6379, '127.0.0.1');
+server.listen(6379, () => {
+  console.log('Mini-Redis listening on 6379');
+});
