@@ -1,136 +1,130 @@
 import net from 'node:net';
 import { RESPDecoder } from './resp';
 
-// Store value + optional expiry time (epoch ms)
-type Entry = { value: string; expiresAt?: number };
+// Store can hold either strings (for SET/GET) or lists (for RPUSH)
+type Entry =
+  | { type: 'string'; value: string }
+  | { type: 'list'; value: string[] };
 const store = new Map<string, Entry>();
-
-function nowMs() {
-  return Date.now();
-}
-
-function isExpired(e: Entry | undefined): boolean {
-  return !!(e && e.expiresAt !== undefined && nowMs() >= e.expiresAt);
-}
-
-function getFresh(key: string): string | undefined {
-  const e = store.get(key);
-  if (!e) return undefined;
-  if (isExpired(e)) {
-    store.delete(key);
-    return undefined;
-  }
-  return e.value;
-}
 
 // RESP helpers
 function simpleString(s: string): string {
   return `+${s}\r\n`;
 }
-
 function errorString(s: string): string {
   return `-${s}\r\n`;
 }
-
 function bulkString(s: string): string {
   const n = Buffer.byteLength(s);
   return `$${n}\r\n${s}\r\n`;
 }
 const NULL_BULK = '$-1\r\n';
+function integerReply(n: number): string {
+  return `:${n}\r\n`;
+}
 
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
-  socket.on('data', (chunk) => {
-    const frames = decoder.push(chunk); // each: ["COMMAND", ...args]
+  socket.on('data', (chunk: Buffer) => {
+    const frames = decoder.push(chunk); // ["COMMAND", ...args]
 
     for (const parts of frames) {
       if (!parts || parts.length === 0 || parts[0] == null) continue;
-
       const cmd = String(parts[0]).toUpperCase();
 
-      // --- PING ---
-      if (cmd === 'PING') {
-        socket.write(simpleString('PONG'));
-        continue;
-      }
-
-      // --- ECHO <message> ---
-      if (cmd === 'ECHO') {
-        const arg = parts[1];
-        if (typeof arg !== 'string' || parts.length !== 2) {
-          socket.write(
-            errorString("ERR wrong number of arguments for 'echo' command")
-          );
-        } else {
-          socket.write(bulkString(arg));
-        }
-        continue;
-      }
-
-      // --- SET <key> <value> [PX <ms>] ---
-      if (cmd === 'SET') {
-        const key = parts[1];
-        const val = parts[2];
-        if (typeof key !== 'string' || typeof val !== 'string') {
-          socket.write(
-            errorString("ERR wrong number of arguments for 'set' command")
-          );
-          continue;
+      switch (cmd) {
+        // ---- PING ----
+        case 'PING': {
+          socket.write(simpleString('PONG'));
+          break;
         }
 
-        // Default: no expiry
-        let expiresAt: number | undefined = undefined;
-
-        // Parse optional PX (case-insensitive), allow it anywhere after value in this stage
-        // e.g., ["SET","k","v","PX","100"] or ["SET","k","v","px","100"]
-        for (let i = 3; i < parts.length; i++) {
-          const token = parts[i];
-          if (typeof token === 'string' && token.toUpperCase() === 'PX') {
-            const next = parts[i + 1];
-            if (typeof next !== 'string') {
-              socket.write(errorString('ERR syntax error'));
-              continue;
-            }
-            const ms = Number(next);
-            if (!Number.isFinite(ms) || ms < 0 || !Number.isInteger(ms)) {
-              socket.write(
-                errorString('ERR value is not an integer or out of range')
-              );
-              continue;
-            }
-            expiresAt = nowMs() + ms;
-            i++; // skip the value we just consumed
+        // ---- ECHO ----
+        case 'ECHO': {
+          const arg = parts[1];
+          if (typeof arg !== 'string' || parts.length !== 2) {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'echo' command")
+            );
           } else {
-            // Ignore any other options in this stage
+            socket.write(bulkString(arg));
           }
+          break;
         }
 
-        store.set(key, { value: val, expiresAt });
-        socket.write(simpleString('OK'));
-        continue;
-      }
+        // ---- SET ----
+        case 'SET': {
+          const key = parts[1];
+          const val = parts[2];
+          if (typeof key !== 'string' || typeof val !== 'string') {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'set' command")
+            );
+            break;
+          }
+          store.set(key, { type: 'string', value: val });
+          socket.write(simpleString('OK'));
+          break;
+        }
 
-      // --- GET <key> ---
-      if (cmd === 'GET') {
-        const key = parts[1];
-        if (typeof key !== 'string' || parts.length !== 2) {
+        // ---- GET ----
+        case 'GET': {
+          const key = parts[1];
+          if (typeof key !== 'string') {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'get' command")
+            );
+            break;
+          }
+          const entry = store.get(key);
+          if (!entry || entry.type !== 'string') {
+            socket.write(NULL_BULK);
+          } else {
+            socket.write(bulkString(entry.value));
+          }
+          break;
+        }
+
+        // ---- RPUSH ----
+        case 'RPUSH': {
+          const key = parts[1];
+          const element = parts[2];
+          if (typeof key !== 'string' || typeof element !== 'string') {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'rpush' command")
+            );
+            break;
+          }
+
+          let entry = store.get(key);
+          if (!entry) {
+            // Stage requirement: only need to handle creating a new list with one element
+            const newList = [element];
+            store.set(key, { type: 'list', value: newList });
+            socket.write(integerReply(newList.length)); // :1\r\n
+          } else if (entry.type === 'list') {
+            // Sneak peek at later stage: append to existing list
+            entry.value.push(element);
+            socket.write(integerReply(entry.value.length));
+          } else {
+            socket.write(
+              errorString(
+                'WRONGTYPE Operation against a key holding the wrong kind of value'
+              )
+            );
+          }
+          break;
+        }
+
+        // ---- Unknown ----
+        default: {
           socket.write(
-            errorString("ERR wrong number of arguments for 'get' command")
+            errorString(`ERR unknown command '${String(parts[0])}'`)
           );
-          continue;
+          break;
         }
-        const val = getFresh(key);
-        if (val === undefined) {
-          socket.write(NULL_BULK);
-        } else {
-          socket.write(bulkString(val));
-        }
-        continue;
       }
-
-      // --- Unknown command ---
-      socket.write(errorString(`ERR unknown command '${String(parts[0])}'`));
     }
   });
 
