@@ -1,11 +1,17 @@
 import net from 'node:net';
 import { RESPDecoder } from './resp';
 
-// Store can hold either strings (for SET/GET) or lists (for RPUSH)
+// Store can hold strings (with optional expiry) or lists.
 type Entry =
-  | { type: 'string'; value: string }
-  | { type: 'list'; value: string[] };
+  | { type: 'string'; value: string; expiresAt?: number }
+  | { type: 'list'; value: string[]; expiresAt?: number };
+
 const store = new Map<string, Entry>();
+
+// Time helpers
+const nowMs = () => Date.now();
+const isExpired = (e?: Entry) =>
+  !!(e && e.expiresAt !== undefined && nowMs() >= e.expiresAt);
 
 // RESP helpers
 function simpleString(s: string): string {
@@ -23,6 +29,17 @@ function integerReply(n: number): string {
   return `:${n}\r\n`;
 }
 
+// Get string value if present and not expired; lazily delete when expired
+function getFreshString(key: string): string | undefined {
+  const e = store.get(key);
+  if (!e || e.type !== 'string') return undefined;
+  if (isExpired(e)) {
+    store.delete(key); // optional cleanup
+    return undefined;
+  }
+  return e.value;
+}
+
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
@@ -34,13 +51,11 @@ const server = net.createServer((socket) => {
       const cmd = String(parts[0]).toUpperCase();
 
       switch (cmd) {
-        // ---- PING ----
         case 'PING': {
           socket.write(simpleString('PONG'));
           break;
         }
 
-        // ---- ECHO ----
         case 'ECHO': {
           const arg = parts[1];
           if (typeof arg !== 'string' || parts.length !== 2) {
@@ -53,7 +68,7 @@ const server = net.createServer((socket) => {
           break;
         }
 
-        // ---- SET ----
+        // SET <key> <value> [PX <ms>]
         case 'SET': {
           const key = parts[1];
           const val = parts[2];
@@ -63,30 +78,61 @@ const server = net.createServer((socket) => {
             );
             break;
           }
-          store.set(key, { type: 'string', value: val });
+
+          // Default: no expiry
+          let expiresAt: number | undefined = undefined;
+
+          // Parse optional options after <value>
+          // Accepts: PX <ms> (case-insensitive). Ignore other options in this stage.
+          for (let i = 3; i < parts.length; i++) {
+            const token = parts[i];
+            if (typeof token === 'string' && token.toUpperCase() === 'PX') {
+              const msToken = parts[i + 1];
+              if (typeof msToken !== 'string') {
+                socket.write(errorString('ERR syntax error'));
+                // Do not store; stop processing this command
+                expiresAt = undefined;
+                break;
+              }
+              const ms = Number(msToken);
+              if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms < 0) {
+                socket.write(
+                  errorString('ERR value is not an integer or out of range')
+                );
+                expiresAt = undefined;
+                break;
+              }
+              expiresAt = nowMs() + ms;
+              i++; // consume value after PX
+            } else {
+              // Ignore unknown options for this stage
+            }
+          }
+
+          // Overwrite key with new value/expiry
+          store.set(key, { type: 'string', value: val, expiresAt });
           socket.write(simpleString('OK'));
           break;
         }
 
-        // ---- GET ----
         case 'GET': {
           const key = parts[1];
-          if (typeof key !== 'string') {
+          if (typeof key !== 'string' || parts.length !== 2) {
             socket.write(
               errorString("ERR wrong number of arguments for 'get' command")
             );
             break;
           }
-          const entry = store.get(key);
-          if (!entry || entry.type !== 'string') {
-            socket.write(NULL_BULK);
+          const val = getFreshString(key);
+          if (val === undefined) {
+            socket.write(NULL_BULK); // missing or expired
           } else {
-            socket.write(bulkString(entry.value));
+            socket.write(bulkString(val));
           }
           break;
         }
 
-        // ---- RPUSH ----
+        // RPUSH <key> <element>  (for this stage: new list with one element)
         case 'RPUSH': {
           const key = parts[1];
           const element = parts[2];
@@ -97,14 +143,13 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          let entry = store.get(key);
+          const entry = store.get(key);
           if (!entry) {
-            // Stage requirement: only need to handle creating a new list with one element
-            const newList = [element];
-            store.set(key, { type: 'list', value: newList });
-            socket.write(integerReply(newList.length)); // :1\r\n
+            const list = [element];
+            store.set(key, { type: 'list', value: list });
+            socket.write(integerReply(list.length)); // :1\r\n
           } else if (entry.type === 'list') {
-            // Sneak peek at later stage: append to existing list
+            // (Optional: already supports appending to existing lists)
             entry.value.push(element);
             socket.write(integerReply(entry.value.length));
           } else {
@@ -117,7 +162,6 @@ const server = net.createServer((socket) => {
           break;
         }
 
-        // ---- Unknown ----
         default: {
           socket.write(
             errorString(`ERR unknown command '${String(parts[0])}'`)
