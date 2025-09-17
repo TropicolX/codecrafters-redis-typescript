@@ -135,30 +135,44 @@ const server = net.createServer((socket) => {
         // RPUSH <key> <element>  (for this stage: new list with one element)
         case 'RPUSH': {
           const key = parts[1];
-          const element = parts[2];
-          if (typeof key !== 'string' || typeof element !== 'string') {
+          // All remaining args are elements to append
+          const elements = parts.slice(2);
+
+          // Validate: need at least one element, and all must be strings
+          if (
+            typeof key !== 'string' ||
+            elements.length === 0 ||
+            elements.some((e) => typeof e !== 'string')
+          ) {
             socket.write(
               errorString("ERR wrong number of arguments for 'rpush' command")
             );
             break;
           }
 
+          const asStrings = elements as string[];
+
           const entry = store.get(key);
           if (!entry) {
-            const list = [element];
+            // Create new list with all elements
+            const list = [...asStrings];
             store.set(key, { type: 'list', value: list });
-            socket.write(integerReply(list.length)); // :1\r\n
-          } else if (entry.type === 'list') {
-            // (Optional: already supports appending to existing lists)
-            entry.value.push(element);
-            socket.write(integerReply(entry.value.length));
-          } else {
+            socket.write(integerReply(list.length));
+            break;
+          }
+
+          if (entry.type !== 'list') {
             socket.write(
               errorString(
                 'WRONGTYPE Operation against a key holding the wrong kind of value'
               )
             );
+            break;
           }
+
+          // Append all elements to existing list
+          entry.value.push(...asStrings);
+          socket.write(integerReply(entry.value.length));
           break;
         }
 
