@@ -239,6 +239,50 @@ const server = net.createServer((socket) => {
           break;
         }
 
+        case 'LPUSH': {
+          const key = parts[1];
+          // All remaining args are elements to append
+          const elements = parts.slice(2);
+
+          // Validate: need at least one element, and all must be strings
+          if (
+            typeof key !== 'string' ||
+            elements.length === 0 ||
+            elements.some((e) => typeof e !== 'string')
+          ) {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'lpush' command")
+            );
+            break;
+          }
+
+          const asStrings = elements as string[];
+
+          const entry = store.get(key);
+
+          if (!entry) {
+            // Create new list with all elements
+            const list = [...asStrings];
+            store.set(key, { type: 'list', value: list });
+            socket.write(integerReply(list.length));
+            break;
+          }
+
+          if (entry.type !== 'list') {
+            socket.write(
+              errorString(
+                'WRONGTYPE Operation against a key holding the wrong kind of value'
+              )
+            );
+            break;
+          }
+
+          // Append all elements to existing list
+          entry.value.unshift(...asStrings);
+          socket.write(integerReply(entry.value.length));
+          break;
+        }
+
         default: {
           socket.write(
             errorString(`ERR unknown command '${String(parts[0])}'`)
