@@ -214,6 +214,7 @@ const server = net.createServer((socket) => {
             const list = [...asStrings];
             store.set(key, { type: 'list', value: list });
             socket.write(integerReply(list.length));
+            serveWaitersForKey(key);
             break;
           }
 
