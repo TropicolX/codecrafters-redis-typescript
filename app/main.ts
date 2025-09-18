@@ -302,8 +302,29 @@ const server = net.createServer((socket) => {
         }
 
         case 'LPOP': {
+          // support popping multiple values for this stage
           const key = parts[1];
-          if (typeof key !== 'string' || parts.length !== 2) {
+          let count = 1;
+          if (typeof key !== 'string') {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'lpop' command")
+            );
+            break;
+          }
+          if (parts.length === 3) {
+            const countToken = parts[2];
+            if (typeof countToken !== 'string') {
+              socket.write(errorString('ERR syntax error'));
+              break;
+            }
+            count = Number(countToken);
+            if (!Number.isInteger(count) || Number.isNaN(count) || count < 0) {
+              socket.write(
+                errorString('ERR value is not an integer or out of range')
+              );
+              break;
+            }
+          } else if (parts.length > 3) {
             socket.write(
               errorString("ERR wrong number of arguments for 'lpop' command")
             );
@@ -313,16 +334,30 @@ const server = net.createServer((socket) => {
           const entry = store.get(key);
           if (!entry || entry.type !== 'list' || isExpired(entry)) {
             // Missing, wrong type, or expired
-            socket.write(NULL_BULK);
+            socket.write(NULL_BULK); // for this stage: return null if missing
             break;
           }
 
-          if (entry.value.length === 0) {
-            socket.write(NULL_BULK);
+          if (count === 0) {
+            // Special case: do nothing, return empty array
+            socket.write('*0\r\n');
             break;
           }
-          const popped = entry.value.shift()!;
-          socket.write(bulkString(popped));
+
+          const list = entry.value;
+          if (list.length === 0) {
+            // Empty list
+            socket.write(NULL_BULK); // for this stage: return null if empty
+            break;
+          }
+
+          const n = Math.min(count, list.length);
+          let resp = `*${n}\r\n`;
+          for (let i = 0; i < n; i++) {
+            const elem = list.shift()!;
+            resp += bulkString(elem);
+          }
+          socket.write(resp);
           break;
         }
 
