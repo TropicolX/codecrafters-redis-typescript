@@ -281,6 +281,26 @@ const server = net.createServer((socket) => {
           break;
         }
 
+        case 'LLEN': {
+          const key = parts[1];
+          if (typeof key !== 'string' || parts.length !== 2) {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'llen' command")
+            );
+            break;
+          }
+
+          const entry = store.get(key);
+          if (!entry || entry.type !== 'list' || isExpired(entry)) {
+            // Missing, wrong type, or expired
+            socket.write(integerReply(0));
+            break;
+          }
+
+          socket.write(integerReply(entry.value.length));
+          break;
+        }
+
         default: {
           socket.write(
             errorString(`ERR unknown command '${String(parts[0])}'`)
