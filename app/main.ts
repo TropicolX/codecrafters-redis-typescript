@@ -215,36 +215,34 @@ const server = net.createServer((socket) => {
           const list = entry.value;
           const n = list.length;
 
-          // Handle negative indices
+          // Normalize start/stop (allow negatives)
           let iStart = start >= 0 ? start : n + start;
           let iStop = stop >= 0 ? stop : n + stop;
-          // Clamp to [0, n-1]
+
+          // If start > stop after normalization -> empty
+          // Also handle out-of-range by clamping, but return empty if start >= n or stop < 0
           if (iStart < 0) iStart = 0;
-          if (iStart >= n) iStart = n - 1;
-          if (iStop < 0) iStop = 0;
-          if (iStop >= n) iStop = n - 1;
-          // Empty range if start > stop after adjustments
-          if (iStart > iStop) {
+          if (iStop < 0) iStop = -1; // ensures empty if negative after clamp
+
+          if (iStart > iStop || iStart >= n || iStop < 0) {
             socket.write('*0\r\n');
             break;
           }
 
-          // RESP array of bulk strings
+          if (iStop >= n) iStop = n - 1;
+
+          // Build RESP array
           const slice = list.slice(iStart, iStop + 1);
           let resp = `*${slice.length}\r\n`;
-          for (const elem of slice) {
-            resp += bulkString(elem);
-          }
+          for (const elem of slice) resp += bulkString(elem);
           socket.write(resp);
           break;
         }
 
         case 'LPUSH': {
           const key = parts[1];
-          // All remaining args are elements to append
           const elements = parts.slice(2);
 
-          // Validate: need at least one element, and all must be strings
           if (
             typeof key !== 'string' ||
             elements.length === 0 ||
@@ -261,8 +259,8 @@ const server = net.createServer((socket) => {
           const entry = store.get(key);
 
           if (!entry) {
-            // Create new list with all elements
-            const list = [...asStrings];
+            // Create new list: push left one-by-one (so reverse the provided order)
+            const list = [...asStrings].reverse();
             store.set(key, { type: 'list', value: list });
             socket.write(integerReply(list.length));
             break;
@@ -277,8 +275,8 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          // Append all elements to existing list
-          entry.value.unshift(...asStrings);
+          // Prepend multiple values preserving Redis semantics
+          entry.value.unshift(...[...asStrings].reverse());
           socket.write(integerReply(entry.value.length));
           break;
         }
