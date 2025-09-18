@@ -176,6 +176,69 @@ const server = net.createServer((socket) => {
           break;
         }
 
+        case 'LRANGE': {
+          const key = parts[1];
+          const startToken = parts[2];
+          const stopToken = parts[3];
+          if (
+            typeof key !== 'string' ||
+            typeof startToken !== 'string' ||
+            typeof stopToken !== 'string' ||
+            parts.length !== 4
+          ) {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'lrange' command")
+            );
+            break;
+          }
+          const start = Number(startToken);
+          const stop = Number(stopToken);
+          if (
+            !Number.isInteger(start) ||
+            !Number.isInteger(stop) ||
+            Number.isNaN(start) ||
+            Number.isNaN(stop)
+          ) {
+            socket.write(
+              errorString('ERR value is not an integer or out of range')
+            );
+            break;
+          }
+
+          const entry = store.get(key);
+          if (!entry || entry.type !== 'list' || isExpired(entry)) {
+            // Missing, wrong type, or expired
+            socket.write('*0\r\n'); // empty list
+            break;
+          }
+
+          const list = entry.value;
+          const n = list.length;
+
+          // Handle negative indices
+          let iStart = start >= 0 ? start : n + start;
+          let iStop = stop >= 0 ? stop : n + stop;
+          // Clamp to [0, n-1]
+          if (iStart < 0) iStart = 0;
+          if (iStart >= n) iStart = n - 1;
+          if (iStop < 0) iStop = 0;
+          if (iStop >= n) iStop = n - 1;
+          // Empty range if start > stop after adjustments
+          if (iStart > iStop) {
+            socket.write('*0\r\n');
+            break;
+          }
+
+          // RESP array of bulk strings
+          const slice = list.slice(iStart, iStop + 1);
+          let resp = `*${slice.length}\r\n`;
+          for (const elem of slice) {
+            resp += bulkString(elem);
+          }
+          socket.write(resp);
+          break;
+        }
+
         default: {
           socket.write(
             errorString(`ERR unknown command '${String(parts[0])}'`)
