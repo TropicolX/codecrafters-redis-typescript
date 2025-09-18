@@ -25,6 +25,7 @@ function bulkString(s: string): string {
   return `$${n}\r\n${s}\r\n`;
 }
 const NULL_BULK = '$-1\r\n';
+const NULL_ARRAY = '*-1\r\n';
 function integerReply(n: number): string {
   return `:${n}\r\n`;
 }
@@ -501,7 +502,7 @@ const server = net.createServer((socket) => {
               // If still waiting, respond with null bulk string
               if (waiterBySocket.get(socket) === waiter) {
                 cleanupWaiter(waiter);
-                socket.write(NULL_BULK); // as per your spec
+                socket.write(NULL_ARRAY); // as per your spec
               }
             }, Math.ceil(timeoutSec * 1000)); // seconds → ms
           }
