@@ -1,4 +1,4 @@
-import net from 'node:net';
+import net, { Socket } from 'node:net';
 import { RESPDecoder } from './resp';
 
 // Store can hold strings (with optional expiry) or lists.
@@ -38,6 +38,62 @@ function getFreshString(key: string): string | undefined {
     return undefined;
   }
   return e.value;
+}
+
+type Waiter = {
+  socket: Socket;
+  keys: string[]; // keys this waiter is watching
+  timer?: ReturnType<typeof setTimeout>; // timeout handle if any
+  createdAt: number; // for FIFO (longest waiting first)
+};
+
+// key -> FIFO of waiters
+const blockedByKey = new Map<string, Waiter[]>();
+// one waiter per socket (simplify)
+const waiterBySocket = new Map<Socket, Waiter>();
+
+function encodeArrayOfBulk(...items: string[]): string {
+  let resp = `*${items.length}\r\n`;
+  for (const s of items) resp += bulkString(s);
+  return resp;
+}
+
+function removeWaiterFromKey(key: string, w: Waiter) {
+  const q = blockedByKey.get(key);
+  if (!q) return;
+  const i = q.indexOf(w);
+  if (i >= 0) q.splice(i, 1);
+  if (q.length === 0) blockedByKey.delete(key);
+}
+
+function cleanupWaiter(w: Waiter) {
+  // remove from all key queues
+  for (const k of w.keys) removeWaiterFromKey(k, w);
+  if (w.timer) clearTimeout(w.timer);
+  waiterBySocket.delete(w.socket);
+}
+
+function serveWaitersForKey(key: string) {
+  const entry = store.get(key);
+  if (!entry || entry.type !== 'list') return;
+
+  // As long as we have elements and waiters, serve oldest first (FIFO)
+  let q = blockedByKey.get(key);
+  while (q && q.length > 0 && entry.value.length > 0) {
+    const w = q.shift()!; // longest waiting for this key
+    // Fully remove this waiter from other keys & timer
+    cleanupWaiter(w);
+
+    // Pop from the left
+    const elem = entry.value.shift()!;
+    if (entry.value.length === 0) store.delete(key); // optional cleanup
+
+    // Reply: ["key","elem"] as RESP array of 2 bulk strings
+    w.socket.write(encodeArrayOfBulk(key, elem));
+
+    // refresh queue ref (it may have been removed in cleanup if empty)
+    q = blockedByKey.get(key);
+  }
 }
 
 const server = net.createServer((socket) => {
@@ -173,6 +229,7 @@ const server = net.createServer((socket) => {
           // Append all elements to existing list
           entry.value.push(...asStrings);
           socket.write(integerReply(entry.value.length));
+          serveWaitersForKey(key);
           break;
         }
 
@@ -278,6 +335,7 @@ const server = net.createServer((socket) => {
           // Prepend multiple values preserving Redis semantics
           entry.value.unshift(...[...asStrings].reverse());
           socket.write(integerReply(entry.value.length));
+          serveWaitersForKey(key);
           break;
         }
 
@@ -366,6 +424,90 @@ const server = net.createServer((socket) => {
           break;
         }
 
+        case 'BLPOP': {
+          // BLPOP key [key ...] timeout
+          if (parts.length < 3) {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'blpop' command")
+            );
+            break;
+          }
+
+          // Last arg is timeout (seconds)
+          const timeoutToken = parts[parts.length - 1];
+          if (typeof timeoutToken !== 'string') {
+            socket.write(errorString('ERR syntax error'));
+            break;
+          }
+          const timeoutSec = Number(timeoutToken);
+          if (!Number.isFinite(timeoutSec) || timeoutSec < 0) {
+            socket.write(
+              errorString('ERR timeout is not a non-negative number')
+            );
+            break;
+          }
+
+          // Keys are everything before timeout
+          const keyTokens = parts.slice(1, parts.length - 1);
+          const keys: string[] = [];
+          for (const t of keyTokens) {
+            if (typeof t !== 'string') {
+              socket.write(errorString('ERR syntax error'));
+              return;
+            }
+            keys.push(t);
+          }
+
+          // 1) Try immediate pop (in key order)
+          let poppedKey: string | null = null;
+          let poppedVal: string | null = null;
+          for (const k of keys) {
+            const e = store.get(k);
+            if (e && e.type === 'list' && e.value.length > 0) {
+              poppedKey = k;
+              poppedVal = e.value.shift() as string;
+              if (e.value.length === 0) store.delete(k);
+              break;
+            }
+          }
+          if (poppedKey !== null && poppedVal !== null) {
+            socket.write(encodeArrayOfBulk(poppedKey, poppedVal));
+            break;
+          }
+
+          // 2) Otherwise, block
+          // If this socket already has a waiter, cancel it (one outstanding per socket)
+          const existing = waiterBySocket.get(socket);
+          if (existing) cleanupWaiter(existing);
+
+          const waiter: Waiter = {
+            socket,
+            keys,
+            createdAt: Date.now(),
+          };
+
+          // Register on each key
+          for (const k of keys) {
+            const q = blockedByKey.get(k);
+            if (q) q.push(waiter);
+            else blockedByKey.set(k, [waiter]);
+          }
+          waiterBySocket.set(socket, waiter);
+
+          // Optional timeout (0 = block indefinitely)
+          if (timeoutSec > 0) {
+            waiter.timer = setTimeout(() => {
+              // If still waiting, respond with null bulk string
+              if (waiterBySocket.get(socket) === waiter) {
+                cleanupWaiter(waiter);
+                socket.write(NULL_BULK); // as per your spec
+              }
+            }, Math.ceil(timeoutSec * 1000)); // seconds → ms
+          }
+
+          break;
+        }
+
         default: {
           socket.write(
             errorString(`ERR unknown command '${String(parts[0])}'`)
@@ -376,8 +518,17 @@ const server = net.createServer((socket) => {
     }
   });
 
+  socket.on('close', () => {
+    const w = waiterBySocket.get(socket);
+    if (w) cleanupWaiter(w);
+  });
+  socket.on('end', () => {
+    const w = waiterBySocket.get(socket);
+    if (w) cleanupWaiter(w);
+  });
   socket.on('error', () => {
-    /* ignore for this stage */
+    const w = waiterBySocket.get(socket);
+    if (w) cleanupWaiter(w);
   });
 });
 
