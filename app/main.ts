@@ -510,6 +510,23 @@ const server = net.createServer((socket) => {
           break;
         }
 
+        case 'TYPE': {
+          // arity check: TYPE <key>
+          if (parts.length !== 2 || typeof parts[1] !== 'string') {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'type' command")
+            );
+            break;
+          }
+
+          const key = parts[1];
+
+          // Minimal requirement for this stage: only "string" & "none"
+          const t = store.has(key) ? 'string' : 'none';
+          socket.write(simpleString(t));
+          break;
+        }
+
         default: {
           socket.write(
             errorString(`ERR unknown command '${String(parts[0])}'`)
