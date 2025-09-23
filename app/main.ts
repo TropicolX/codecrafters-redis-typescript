@@ -6,6 +6,11 @@ type Entry =
   | { type: 'string'; value: string; expiresAt?: number }
   | { type: 'list'; value: string[]; expiresAt?: number };
 
+type StreamEntry = { id: string; fields: Record<string, string> };
+type Stream = { entries: StreamEntry[] };
+
+const streams = new Map<string, Stream>(); // key -> stream
+
 const store = new Map<string, Entry>();
 
 // Time helpers
@@ -511,19 +516,76 @@ const server = net.createServer((socket) => {
         }
 
         case 'TYPE': {
-          // arity check: TYPE <key>
           if (parts.length !== 2 || typeof parts[1] !== 'string') {
             socket.write(
               errorString("ERR wrong number of arguments for 'type' command")
             );
             break;
           }
+          const key = parts[1] as string;
 
-          const key = parts[1];
+          // Replace `db` with your actual string key-value map used by SET/GET.
+          if (streams.has(key)) {
+            socket.write(simpleString('stream'));
+          } else if (store.has(key)) {
+            socket.write(simpleString('string'));
+          } else {
+            socket.write(simpleString('none'));
+          }
+          break;
+        }
 
-          // Minimal requirement for this stage: only "string" & "none"
-          const t = store.has(key) ? 'string' : 'none';
-          socket.write(simpleString(t));
+        case 'XADD': {
+          // XADD <key> <id> field value [field value ...]
+          if (
+            parts.length < 5 ||
+            typeof parts[1] !== 'string' ||
+            typeof parts[2] !== 'string'
+          ) {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'xadd' command")
+            );
+            break;
+          }
+
+          const key = parts[1] as string;
+          const id = parts[2] as string;
+
+          // Ensure field/value pairs are even
+          const pairCount = parts.length - 3;
+          if (pairCount % 2 !== 0) {
+            socket.write(errorString('ERR Unbalanced key/value pairs'));
+            break;
+          }
+
+          // Optional: protect against wrong type (key exists as a string, not a stream)
+          // Replace `strings` with your actual string store (e.g. `db`)
+          if (/* strings */ store?.has?.(key) && !streams.has(key)) {
+            socket.write(
+              errorString(
+                'WRONGTYPE Operation against a key holding the wrong kind of value'
+              )
+            );
+            break;
+          }
+
+          // Create stream if missing
+          if (!streams.has(key)) streams.set(key, { entries: [] });
+
+          // Build entry fields
+          const fields: Record<string, string> = {};
+          for (let i = 3; i < parts.length; i += 2) {
+            const f = String(parts[i]);
+            const v = String(parts[i + 1]);
+            fields[f] = v;
+          }
+
+          // Append entry
+          const stream = streams.get(key)!;
+          stream.entries.push({ id, fields });
+
+          // Return the entry ID as a BULK STRING
+          socket.write(bulkString(id));
           break;
         }
 
