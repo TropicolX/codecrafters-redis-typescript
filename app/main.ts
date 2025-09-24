@@ -240,6 +240,18 @@ function notifyXAddAppend(key: string) {
   }
 }
 
+function resolveXReadStart(idRaw: string, key: string): ParsedId {
+  if (idRaw !== '$') return parseIdRaw(idRaw); // your existing parser
+
+  const s = streams.get(key);
+  if (s && s.entries.length > 0) {
+    return parseIdRaw(s.entries[s.entries.length - 1].id); // last ID at call time
+  }
+  // No stream or empty: start from 0-0; since there are no entries now,
+  // we'll block, and the *next* append will be > 0-0.
+  return { ms: 0n, seq: 0n };
+}
+
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
@@ -937,7 +949,7 @@ const server = net.createServer((socket) => {
             }
           }
 
-          const starts = idsRaw.map(parseIdRaw);
+          const starts = idsRaw.map((id, i) => resolveXReadStart(id, keys[i]));
 
           // Try immediate read first
           const immediate = buildXReadResponse(keys, starts);
