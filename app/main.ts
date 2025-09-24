@@ -123,6 +123,11 @@ function normalizeEnd(id: string): ParsedId {
   return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : MAX_SEQ };
 }
 
+function array(items: string[]): string {
+  // items are already RESP-encoded chunks (bulk strings, nested arrays, etc.)
+  return `*${items.length}\r\n${items.join('')}`;
+}
+
 type ParsedId = { ms: bigint; seq: bigint };
 
 function cmpId(a: ParsedId, b: ParsedId): number {
@@ -766,7 +771,7 @@ const server = net.createServer((socket) => {
 
           // Missing stream => empty array
           if (!streams.has(key)) {
-            socket.write(encodeArrayOfBulk(...[]));
+            socket.write(array([]));
             break;
           }
 
@@ -787,12 +792,10 @@ const server = net.createServer((socket) => {
               bulkString(k),
               bulkString(v),
             ]);
-            return encodeArrayOfBulk(
-              ...[bulkString(e.id), encodeArrayOfBulk(...kv)]
-            );
+            return array([bulkString(e.id), array(kv)]);
           });
 
-          socket.write(encodeArrayOfBulk(...resp));
+          socket.write(array(resp));
           break;
         }
 
