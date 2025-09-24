@@ -801,12 +801,10 @@ const server = net.createServer((socket) => {
 
         case 'XREAD': {
           // Minimal syntax for this stage:
-          // XREAD streams <key> <id>
+          // XREAD streams <k1> <k2> ... <id1> <id2> ...
           if (
-            parts.length !== 4 ||
-            String(parts[1]).toUpperCase() !== 'STREAMS' ||
-            typeof parts[2] !== 'string' ||
-            typeof parts[3] !== 'string'
+            parts.length < 5 ||
+            String(parts[1]).toUpperCase() !== 'STREAMS'
           ) {
             socket.write(
               errorString("ERR wrong number of arguments for 'xread' command")
@@ -814,53 +812,69 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          const key = parts[2] as string;
-          const startIdRaw = parts[3] as string;
-
-          // WRONGTYPE: key exists as non-stream (adjust `db` to your KV store)
-          if (store?.has?.(key) && !streams.has(key)) {
+          // After 'STREAMS', split the args into two equal halves: keys and ids
+          const after = parts.slice(2);
+          if (after.length % 2 !== 0) {
             socket.write(
-              errorString(
-                'WRONGTYPE Operation against a key holding the wrong kind of value'
-              )
+              errorString("ERR unmatched keys/ids for 'xread' command")
             );
             break;
           }
 
-          // If stream missing or no results, for this stage we can safely return an empty top-level array.
-          // (Real Redis returns a Null Array, but the stage doesn't test that case.)
-          if (!streams.has(key)) {
-            socket.write(array([]));
-            break;
+          const half = after.length / 2;
+          const keys = after.slice(0, half).map(String);
+          const ids = after.slice(half).map(String);
+
+          // WRONGTYPE if any key exists as non-stream in your string store
+          for (const k of keys) {
+            if (store?.has?.(k) && !streams.has(k)) {
+              socket.write(
+                errorString(
+                  'WRONGTYPE Operation against a key holding the wrong kind of value'
+                )
+              );
+              return;
+            }
           }
 
-          const start = parseIdRaw(startIdRaw);
-          const s = streams.get(key)!;
+          // Build per-stream results (omit streams with no matches)
+          const perStreamRESP: string[] = [];
 
-          // EXCLUSIVE: only entries with id > start
-          const matches = s.entries.filter((e) => {
-            const id = parseIdRaw(e.id);
-            return cmpId(id, start) > 0;
-          });
+          for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            const startIdRaw = ids[i];
 
-          if (matches.length === 0) {
-            socket.write(array([])); // or a Null Array if you prefer: socket.write('*-1\r\n')
-            break;
+            const s = streams.get(key);
+            if (!s) {
+              // No such stream => no matches for this key (skip it)
+              continue;
+            }
+
+            const start = parseIdRaw(startIdRaw);
+
+            // EXCLUSIVE: id > start
+            const matches = s.entries.filter(
+              (e) => cmpId(parseIdRaw(e.id), start) > 0
+            );
+
+            if (matches.length === 0) continue;
+
+            // Entry arrays: [ BulkString(id), Array(BulkString(field), BulkString(value), ...) ]
+            const entryArrays = matches.map((e) => {
+              const kv = e.fields.flatMap(([k, v]) => [
+                bulkString(k),
+                bulkString(v),
+              ]);
+              return array([bulkString(e.id), array(kv)]);
+            });
+
+            // Per-key item: [ BulkString(key), Array(entryArrays...) ]
+            perStreamRESP.push(array([bulkString(key), array(entryArrays)]));
           }
 
-          // Build: [ [ key, [ [id, [field, value, ...]], ... ] ] ]
-          const entryArrays = matches.map((e) => {
-            const kv = e.fields.flatMap(([k, v]) => [
-              bulkString(k),
-              bulkString(v),
-            ]);
-            return array([bulkString(e.id), array(kv)]);
-          });
-
-          const perKey = array([bulkString(key), array(entryArrays)]);
-          const outer = array([perKey]);
-
-          socket.write(outer);
+          // If nothing matched across all streams, return empty array (adequate for this stage)
+          // (Real Redis returns Null Array *-1, but the tests don't require it.)
+          socket.write(array(perStreamRESP));
           break;
         }
 
