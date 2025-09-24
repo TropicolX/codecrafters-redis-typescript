@@ -125,15 +125,27 @@ function normalizeEndId(id: string): { ms: bigint; seq: bigint } {
   return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : MAX_SEQ };
 }
 
-function cmpId(
-  a: { ms: bigint; seq: bigint },
-  b: { ms: bigint; seq: bigint }
-): number {
+type ParsedId = { ms: bigint; seq: bigint };
+
+function cmpId(a: ParsedId, b: ParsedId): number {
   if (a.ms < b.ms) return -1;
   if (a.ms > b.ms) return 1;
   if (a.seq < b.seq) return -1;
   if (a.seq > b.seq) return 1;
   return 0;
+}
+
+function parseIdStrict(id: string): ParsedId {
+  // explicit IDs only in this stage: "<ms>-<seq>"
+  const [msStr, seqStr] = id.split('-', 2);
+  if (!msStr || !seqStr) throw new Error('bad-id');
+  const ms = BigInt(msStr);
+  const seq = BigInt(seqStr);
+  return { ms, seq };
+}
+
+function isZeroZero(id: ParsedId): boolean {
+  return id.ms === 0n && id.seq === 0n;
 }
 
 const server = net.createServer((socket) => {
@@ -577,18 +589,16 @@ const server = net.createServer((socket) => {
           }
 
           const key = parts[1] as string;
-          const id = parts[2] as string;
+          const idRaw = parts[2] as string;
 
-          // Ensure field/value pairs are even
-          const pairCount = parts.length - 3;
-          if (pairCount % 2 !== 0) {
+          // Ensure even number of field/value args
+          if ((parts.length - 3) % 2 !== 0) {
             socket.write(errorString('ERR Unbalanced key/value pairs'));
             break;
           }
 
-          // Optional: protect against wrong type (key exists as a string, not a stream)
-          // Replace `strings` with your actual string store (e.g. `db`)
-          if (/* strings */ store?.has?.(key) && !streams.has(key)) {
+          // WRONGTYPE (key exists as non-stream). Replace `db` with your actual string store.
+          if (store?.has?.(key) && !streams.has(key)) {
             socket.write(
               errorString(
                 'WRONGTYPE Operation against a key holding the wrong kind of value'
@@ -597,16 +607,55 @@ const server = net.createServer((socket) => {
             break;
           }
 
+          // Parse & validate ID
+          let idParsed: ParsedId;
+          try {
+            idParsed = parseIdStrict(idRaw);
+          } catch {
+            // For this stage they won't test syntax errors, but being defensive is fine
+            socket.write(
+              errorString('ERR The ID specified in XADD is not valid')
+            );
+            break;
+          }
+
+          // Minimum allowed is > 0-0 (i.e., 0-0 is invalid)
+          if (isZeroZero(idParsed)) {
+            socket.write(
+              errorString(
+                'ERR The ID specified in XADD must be greater than 0-0'
+              )
+            );
+            break;
+          }
+
           // Create stream if missing
           if (!streams.has(key)) streams.set(key, { entries: [] });
+          const stream = streams.get(key)!;
 
-          // Build entry fields
+          // If the stream has a last entry, ID must be strictly greater than last ID
+          if (stream.entries.length > 0) {
+            const last = stream.entries[stream.entries.length - 1];
+            const lastParsed = parseIdStrict(last.id);
+            if (cmpId(idParsed, lastParsed) <= 0) {
+              socket.write(
+                errorString(
+                  'ERR The ID specified in XADD is equal or smaller than the target stream top item'
+                )
+              );
+              break;
+            }
+          }
+
+          // Build fields preserving insertion order
           const fields: Array<[string, string]> = [];
           for (let i = 3; i < parts.length; i += 2) {
             fields.push([String(parts[i]), String(parts[i + 1])]);
           }
-          streams.get(key)!.entries.push({ id, fields });
-          socket.write(bulkString(id));
+
+          // Append & return the ID as a BULK STRING
+          stream.entries.push({ id: idRaw, fields });
+          socket.write(bulkString(idRaw));
           break;
         }
 
