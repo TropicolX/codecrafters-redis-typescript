@@ -6,7 +6,7 @@ type Entry =
   | { type: 'string'; value: string; expiresAt?: number }
   | { type: 'list'; value: string[]; expiresAt?: number };
 
-type StreamEntry = { id: string; fields: Record<string, string> };
+type StreamEntry = { id: string; fields: Array<[string, string]> };
 type Stream = { entries: StreamEntry[] };
 
 const streams = new Map<string, Stream>(); // key -> stream
@@ -100,6 +100,40 @@ function serveWaitersForKey(key: string) {
     // refresh queue ref (it may have been removed in cleanup if empty)
     q = blockedByKey.get(key);
   }
+}
+
+const MAX_SEQ = 18446744073709551615n; // Redis' max seq
+
+function parseIdRaw(id: string): { ms: bigint; seq: bigint } {
+  const [msStr, seqStr] = id.split('-', 2);
+  const ms = BigInt(msStr);
+  const seq = seqStr != null ? BigInt(seqStr) : 0n;
+  return { ms, seq };
+}
+
+function normalizeStartId(id: string): { ms: bigint; seq: bigint } {
+  // "123"  -> 123-0
+  // "123-4" stays 123-4
+  const [msStr, seqStr] = id.split('-', 2);
+  return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : 0n };
+}
+
+function normalizeEndId(id: string): { ms: bigint; seq: bigint } {
+  // "123"  -> 123-MAX_SEQ
+  // "123-4" stays 123-4
+  const [msStr, seqStr] = id.split('-', 2);
+  return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : MAX_SEQ };
+}
+
+function cmpId(
+  a: { ms: bigint; seq: bigint },
+  b: { ms: bigint; seq: bigint }
+): number {
+  if (a.ms < b.ms) return -1;
+  if (a.ms > b.ms) return 1;
+  if (a.seq < b.seq) return -1;
+  if (a.seq > b.seq) return 1;
+  return 0;
 }
 
 const server = net.createServer((socket) => {
@@ -425,8 +459,7 @@ const server = net.createServer((socket) => {
           if (list.length === 0) store.delete(key); // optional cleanup
 
           // Return RESP Array of bulk strings
-          let resp = `*${popped.length}\r\n`;
-          for (const elem of popped) resp += bulkString(elem);
+          const resp = encodeArrayOfBulk(...popped);
           socket.write(resp);
           break;
         }
@@ -524,14 +557,9 @@ const server = net.createServer((socket) => {
           }
           const key = parts[1] as string;
 
-          // Replace `db` with your actual string key-value map used by SET/GET.
-          if (streams.has(key)) {
-            socket.write(simpleString('stream'));
-          } else if (store.has(key)) {
-            socket.write(simpleString('string'));
-          } else {
-            socket.write(simpleString('none'));
-          }
+          if (streams.has(key)) socket.write(simpleString('stream'));
+          else if (store.has(key)) socket.write(simpleString('string'));
+          else socket.write(simpleString('none'));
           break;
         }
 
@@ -573,19 +601,72 @@ const server = net.createServer((socket) => {
           if (!streams.has(key)) streams.set(key, { entries: [] });
 
           // Build entry fields
-          const fields: Record<string, string> = {};
+          const fields: Array<[string, string]> = [];
           for (let i = 3; i < parts.length; i += 2) {
-            const f = String(parts[i]);
-            const v = String(parts[i + 1]);
-            fields[f] = v;
+            fields.push([String(parts[i]), String(parts[i + 1])]);
+          }
+          streams.get(key)!.entries.push({ id, fields });
+          socket.write(bulkString(id));
+          break;
+        }
+
+        case 'XRANGE': {
+          // XRANGE <key> <start> <end>
+          if (
+            parts.length !== 4 ||
+            typeof parts[1] !== 'string' ||
+            typeof parts[2] !== 'string' ||
+            typeof parts[3] !== 'string'
+          ) {
+            socket.write(
+              errorString("ERR wrong number of arguments for 'xrange' command")
+            );
+            break;
           }
 
-          // Append entry
-          const stream = streams.get(key)!;
-          stream.entries.push({ id, fields });
+          const key = parts[1] as string;
+          const startRaw = String(parts[2]);
+          const endRaw = String(parts[3]);
 
-          // Return the entry ID as a BULK STRING
-          socket.write(bulkString(id));
+          // If key exists as a string (SET/GET map), that's a WRONGTYPE for streams
+          if (store?.has?.(key) && !streams.has(key)) {
+            socket.write(
+              errorString(
+                'WRONGTYPE Operation against a key holding the wrong kind of value'
+              )
+            );
+            break;
+          }
+
+          // Missing key => empty array
+          if (!streams.has(key)) {
+            socket.write(encodeArrayOfBulk(...[]));
+            break;
+          }
+
+          const start = normalizeStartId(startRaw);
+          const end = normalizeEndId(endRaw);
+
+          const s = streams.get(key)!;
+
+          // entries are stored with raw id "ms-seq"; parse for comparison
+          const inRange = s.entries.filter((e) => {
+            const id = parseIdRaw(e.id);
+            return cmpId(start, id) <= 0 && cmpId(id, end) <= 0;
+          });
+
+          // RESP: Array of [ id, [ field1, value1, field2, value2, ... ] ]
+          const respEntries = inRange.map((e) => {
+            const kvList = e.fields.flatMap(([k, v]) => [
+              bulkString(k),
+              bulkString(v),
+            ]);
+            return encodeArrayOfBulk(
+              ...[bulkString(e.id), encodeArrayOfBulk(...kvList)]
+            );
+          });
+
+          socket.write(encodeArrayOfBulk(...respEntries));
           break;
         }
 
