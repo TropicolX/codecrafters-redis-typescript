@@ -158,6 +158,11 @@ function parseMsOnly(id: string): bigint {
   return BigInt(msStr);
 }
 
+function nowMsBigInt(): bigint {
+  // current unix time in milliseconds (BigInt)
+  return BigInt(Date.now());
+}
+
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
@@ -607,8 +612,8 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          // WRONGTYPE if key exists as non-stream (adjust `db` to your store)
-          if (store.has?.(key) && !streams.has(key)) {
+          // WRONGTYPE if key exists as a non-stream (adjust `db` to your store)
+          if (store?.has?.(key) && !streams.has(key)) {
             socket.write(
               errorString(
                 'WRONGTYPE Operation against a key holding the wrong kind of value'
@@ -623,14 +628,41 @@ const server = net.createServer((socket) => {
 
           let finalId: string;
 
-          if (isMsStar(idRaw)) {
-            // ---- Auto-generate only the sequence (ms-* case) ----
-            const ms = parseMsOnly(idRaw);
+          if (idRaw === '*') {
+            // -------- Auto-generate ms & seq --------
+            const now = nowMsBigInt();
 
-            // Validate monotonic ms vs. last entry
+            if (stream.entries.length === 0) {
+              // first entry: use now-0
+              finalId = `${now.toString()}-0`;
+            } else {
+              const lastParsed = parseIdStrict(
+                stream.entries[stream.entries.length - 1].id
+              );
+              if (now > lastParsed.ms) {
+                // clock advanced: start new ms bucket at seq 0
+                finalId = `${now.toString()}-0`;
+              } else if (now === lastParsed.ms) {
+                // same ms: bump seq
+                finalId = `${now.toString()}-${(
+                  lastParsed.seq + 1n
+                ).toString()}`;
+              } else {
+                // clock went backwards: keep monotonicity -> stick to last.ms and bump seq
+                finalId = `${lastParsed.ms.toString()}-${(
+                  lastParsed.seq + 1n
+                ).toString()}`;
+              }
+            }
+          } else if (idRaw.includes('-') && idRaw.endsWith('*')) {
+            // -------- ms-* branch from previous stage (kept as-is) --------
+            const [msStr] = idRaw.split('-', 2);
+            const ms = BigInt(msStr);
+
             if (stream.entries.length > 0) {
-              const last = stream.entries[stream.entries.length - 1];
-              const lastParsed = parseIdStrict(last.id);
+              const lastParsed = parseIdStrict(
+                stream.entries[stream.entries.length - 1].id
+              );
               if (ms < lastParsed.ms) {
                 socket.write(
                   errorString(
@@ -641,26 +673,23 @@ const server = net.createServer((socket) => {
               }
             }
 
-            // Determine seq:
-            // - if last entry is same ms => seq = last.seq + 1
-            // - else => default seq (0, except ms==0 => 1)
             let seq: bigint;
             if (stream.entries.length > 0) {
               const lastParsed = parseIdStrict(
                 stream.entries[stream.entries.length - 1].id
               );
-              if (lastParsed.ms === ms) {
-                seq = lastParsed.seq + 1n;
-              } else {
-                seq = ms === 0n ? 1n : 0n;
-              }
+              seq =
+                lastParsed.ms === ms
+                  ? lastParsed.seq + 1n
+                  : ms === 0n
+                  ? 1n
+                  : 0n;
             } else {
               seq = ms === 0n ? 1n : 0n;
             }
-
             finalId = `${ms.toString()}-${seq.toString()}`;
           } else {
-            // ---- Explicit ID path (previous stage validation) ----
+            // -------- explicit id validation (previous stage, kept as-is) --------
             let parsed;
             try {
               parsed = parseIdStrict(idRaw);
@@ -671,7 +700,6 @@ const server = net.createServer((socket) => {
               break;
             }
 
-            // 0-0 is invalid
             if (parsed.ms === 0n && parsed.seq === 0n) {
               socket.write(
                 errorString(
@@ -681,12 +709,10 @@ const server = net.createServer((socket) => {
               break;
             }
 
-            // must be strictly > last entry
             if (stream.entries.length > 0) {
               const lastParsed = parseIdStrict(
                 stream.entries[stream.entries.length - 1].id
               );
-              // enforce ms >= last.ms, and if equal then seq > last.seq
               if (parsed.ms < lastParsed.ms || cmpId(parsed, lastParsed) <= 0) {
                 socket.write(
                   errorString(
@@ -706,7 +732,7 @@ const server = net.createServer((socket) => {
             fields.push([String(parts[i]), String(parts[i + 1])]);
           }
 
-          // Append entry & return final ID
+          // Append entry & return final ID as BULK STRING
           stream.entries.push({ id: finalId, fields });
           socket.write(bulkString(finalId));
           break;
