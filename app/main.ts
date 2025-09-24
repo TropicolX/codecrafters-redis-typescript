@@ -166,6 +166,80 @@ function nowMsBigInt(): bigint {
   return BigInt(Date.now());
 }
 
+// --- Blocking waiters ---
+type XReadWaiter = {
+  socket: import('net').Socket;
+  keys: string[];
+  starts: ParsedId[]; // one per key, exclusive start
+  timer: NodeJS.Timeout;
+};
+
+const waitersByKey = new Map<string, Set<XReadWaiter>>();
+
+function registerWaiter(w: XReadWaiter) {
+  for (const k of w.keys) {
+    if (!waitersByKey.has(k)) waitersByKey.set(k, new Set());
+    waitersByKey.get(k)!.add(w);
+  }
+}
+
+function unregisterWaiter(w: XReadWaiter) {
+  clearTimeout(w.timer);
+  for (const k of w.keys) {
+    const set = waitersByKey.get(k);
+    if (set) {
+      set.delete(w);
+      if (set.size === 0) waitersByKey.delete(k);
+    }
+  }
+}
+
+// Build the XREAD array payload (same shape as your non-blocking XREAD).
+// Returns `null` if there are NO matches across all provided streams.
+function buildXReadResponse(keys: string[], starts: ParsedId[]): string | null {
+  const perStream: string[] = [];
+
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const start = starts[i];
+
+    const s = streams.get(key);
+    if (!s) continue;
+
+    const matches = s.entries.filter((e) => cmpId(parseIdRaw(e.id), start) > 0);
+    if (matches.length === 0) continue;
+
+    const entryArrays = matches.map((e) => {
+      const kv = e.fields.flatMap(([k, v]) => [bulkString(k), bulkString(v)]);
+      return array([bulkString(e.id), array(kv)]);
+    });
+
+    perStream.push(array([bulkString(key), array(entryArrays)]));
+  }
+
+  if (perStream.length === 0) return null;
+  return array(perStream);
+}
+
+// Notify waiters that something new arrived on `key`
+function notifyXAddAppend(key: string) {
+  const set = waitersByKey.get(key);
+  if (!set || set.size === 0) return;
+
+  // Copy to avoid mutation during iteration
+  const pending = Array.from(set);
+  for (const w of pending) {
+    const resp = buildXReadResponse(w.keys, w.starts);
+    if (resp !== null) {
+      // Fulfill and remove this waiter
+      try {
+        w.socket.write(resp);
+      } catch {}
+      unregisterWaiter(w);
+    }
+  }
+}
+
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
@@ -738,6 +812,9 @@ const server = net.createServer((socket) => {
           // Append entry & return final ID as BULK STRING
           stream.entries.push({ id: finalId, fields });
           socket.write(bulkString(finalId));
+
+          // Wake any blocked XREADs waiting on this stream
+          notifyXAddAppend(key);
           break;
         }
 
@@ -800,30 +877,55 @@ const server = net.createServer((socket) => {
         }
 
         case 'XREAD': {
-          // XREAD streams <k1> [<k2> ...] <id1> [<id2> ...]
-          if (
-            parts.length < 4 ||
-            String(parts[1]).toUpperCase() !== 'STREAMS'
-          ) {
+          // Accept: XREAD [BLOCK <ms>] STREAMS <k1> [k2 ...] <id1> [id2 ...]
+          if (parts.length < 4) {
             socket.write(
               errorString("ERR wrong number of arguments for 'xread' command")
             );
             break;
           }
 
-          const after = parts.slice(2).map(String); // keys + ids
-          if (after.length % 2 !== 0) {
+          let idx = 1;
+          let blockMs: number | null = null;
+
+          // Optional BLOCK <ms>
+          if (String(parts[idx]).toUpperCase() === 'BLOCK') {
+            if (parts.length < idx + 2) {
+              socket.write(errorString('ERR syntax error'));
+              break;
+            }
+            const msNum = Number(parts[idx + 1]);
+            if (!Number.isFinite(msNum) || msNum < 0) {
+              socket.write(
+                errorString('ERR value is not an integer or out of range')
+              );
+              break;
+            }
+            blockMs = msNum;
+            idx += 2;
+          }
+
+          // STREAMS
+          if (String(parts[idx]).toUpperCase() !== 'STREAMS') {
+            socket.write(errorString('ERR syntax error'));
+            break;
+          }
+          idx += 1;
+
+          // Remaining args: keys..., ids...
+          const remaining = parts.slice(idx).map(String);
+          if (remaining.length < 2 || remaining.length % 2 !== 0) {
             socket.write(
               errorString("ERR unmatched keys/ids for 'xread' command")
             );
             break;
           }
 
-          const half = after.length / 2;
-          const keys = after.slice(0, half);
-          const ids = after.slice(half);
+          const half = remaining.length / 2;
+          const keys = remaining.slice(0, half);
+          const idsRaw = remaining.slice(half);
 
-          // WRONGTYPE: any key that exists as non-stream (adjust `db` to your KV store)
+          // WRONGTYPE checks (if you keep strings in a separate store `db`)
           for (const k of keys) {
             if (store?.has?.(k) && !streams.has(k)) {
               socket.write(
@@ -831,40 +933,48 @@ const server = net.createServer((socket) => {
                   'WRONGTYPE Operation against a key holding the wrong kind of value'
                 )
               );
-              break;
+              return;
             }
           }
 
-          const perStreamRESP: string[] = [];
+          const starts = idsRaw.map(parseIdRaw);
 
-          for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            const startIdRaw = ids[i];
-
-            const s = streams.get(key);
-            if (!s) continue; // missing stream -> no matches for this key
-
-            const start = parseIdRaw(startIdRaw); // your existing helper: "ms[-seq]" -> {ms, seq}
-
-            // EXCLUSIVE: id > start
-            const matches = s.entries.filter(
-              (e) => cmpId(parseIdRaw(e.id), start) > 0
-            );
-            if (matches.length === 0) continue;
-
-            const entryArrays = matches.map((e) => {
-              const kv = e.fields.flatMap(([k, v]) => [
-                bulkString(k),
-                bulkString(v),
-              ]);
-              return array([bulkString(e.id), array(kv)]);
-            });
-
-            perStreamRESP.push(array([bulkString(key), array(entryArrays)]));
+          // Try immediate read first
+          const immediate = buildXReadResponse(keys, starts);
+          if (immediate !== null) {
+            socket.write(immediate);
+            break;
           }
 
-          // For this stage, empty => empty array is fine (real Redis returns Null Array *-1)
-          socket.write(array(perStreamRESP));
+          // No matches now
+          if (blockMs === null || blockMs === 0) {
+            // Non-blocking (or BLOCK 0): return Null Array per spec for “no data”
+            socket.write(NULL_ARRAY);
+            break;
+          }
+
+          // BLOCKING path: park this request until data arrives or timeout
+          const waiter: XReadWaiter = {
+            socket,
+            keys,
+            starts,
+            // @ts-ignore
+            timer: setTimeout(() => {
+              // Timeout: respond with Null Array and clean up
+              try {
+                socket.write(NULL_ARRAY);
+              } catch {}
+              unregisterWaiter(waiter);
+            }, blockMs),
+          };
+
+          // Clean up if client disconnects
+          const onClose = () => unregisterWaiter(waiter);
+          socket.once('close', onClose);
+          socket.once('end', onClose);
+          socket.once('error', onClose as any);
+
+          registerWaiter(waiter);
           break;
         }
 
