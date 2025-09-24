@@ -148,6 +148,16 @@ function isZeroZero(id: ParsedId): boolean {
   return id.ms === 0n && id.seq === 0n;
 }
 
+function isMsStar(id: string): boolean {
+  const [msStr, seqStr] = id.split('-', 2);
+  return !!msStr && seqStr === '*';
+}
+
+function parseMsOnly(id: string): bigint {
+  const [msStr] = id.split('-', 2);
+  return BigInt(msStr);
+}
+
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
@@ -597,33 +607,11 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          // WRONGTYPE (key exists as non-stream). Replace `db` with your actual string store.
-          if (store?.has?.(key) && !streams.has(key)) {
+          // WRONGTYPE if key exists as non-stream (adjust `db` to your store)
+          if (store.has?.(key) && !streams.has(key)) {
             socket.write(
               errorString(
                 'WRONGTYPE Operation against a key holding the wrong kind of value'
-              )
-            );
-            break;
-          }
-
-          // Parse & validate ID
-          let idParsed: ParsedId;
-          try {
-            idParsed = parseIdStrict(idRaw);
-          } catch {
-            // For this stage they won't test syntax errors, but being defensive is fine
-            socket.write(
-              errorString('ERR The ID specified in XADD is not valid')
-            );
-            break;
-          }
-
-          // Minimum allowed is > 0-0 (i.e., 0-0 is invalid)
-          if (isZeroZero(idParsed)) {
-            socket.write(
-              errorString(
-                'ERR The ID specified in XADD must be greater than 0-0'
               )
             );
             break;
@@ -633,18 +621,83 @@ const server = net.createServer((socket) => {
           if (!streams.has(key)) streams.set(key, { entries: [] });
           const stream = streams.get(key)!;
 
-          // If the stream has a last entry, ID must be strictly greater than last ID
-          if (stream.entries.length > 0) {
-            const last = stream.entries[stream.entries.length - 1];
-            const lastParsed = parseIdStrict(last.id);
-            if (cmpId(idParsed, lastParsed) <= 0) {
+          let finalId: string;
+
+          if (isMsStar(idRaw)) {
+            // ---- Auto-generate only the sequence (ms-* case) ----
+            const ms = parseMsOnly(idRaw);
+
+            // Validate monotonic ms vs. last entry
+            if (stream.entries.length > 0) {
+              const last = stream.entries[stream.entries.length - 1];
+              const lastParsed = parseIdStrict(last.id);
+              if (ms < lastParsed.ms) {
+                socket.write(
+                  errorString(
+                    'ERR The ID specified in XADD is equal or smaller than the target stream top item'
+                  )
+                );
+                break;
+              }
+            }
+
+            // Determine seq:
+            // - if last entry is same ms => seq = last.seq + 1
+            // - else => default seq (0, except ms==0 => 1)
+            let seq: bigint;
+            if (stream.entries.length > 0) {
+              const lastParsed = parseIdStrict(
+                stream.entries[stream.entries.length - 1].id
+              );
+              if (lastParsed.ms === ms) {
+                seq = lastParsed.seq + 1n;
+              } else {
+                seq = ms === 0n ? 1n : 0n;
+              }
+            } else {
+              seq = ms === 0n ? 1n : 0n;
+            }
+
+            finalId = `${ms.toString()}-${seq.toString()}`;
+          } else {
+            // ---- Explicit ID path (previous stage validation) ----
+            let parsed;
+            try {
+              parsed = parseIdStrict(idRaw);
+            } catch {
+              socket.write(
+                errorString('ERR The ID specified in XADD is not valid')
+              );
+              break;
+            }
+
+            // 0-0 is invalid
+            if (parsed.ms === 0n && parsed.seq === 0n) {
               socket.write(
                 errorString(
-                  'ERR The ID specified in XADD is equal or smaller than the target stream top item'
+                  'ERR The ID specified in XADD must be greater than 0-0'
                 )
               );
               break;
             }
+
+            // must be strictly > last entry
+            if (stream.entries.length > 0) {
+              const lastParsed = parseIdStrict(
+                stream.entries[stream.entries.length - 1].id
+              );
+              // enforce ms >= last.ms, and if equal then seq > last.seq
+              if (parsed.ms < lastParsed.ms || cmpId(parsed, lastParsed) <= 0) {
+                socket.write(
+                  errorString(
+                    'ERR The ID specified in XADD is equal or smaller than the target stream top item'
+                  )
+                );
+                break;
+              }
+            }
+
+            finalId = idRaw;
           }
 
           // Build fields preserving insertion order
@@ -653,9 +706,9 @@ const server = net.createServer((socket) => {
             fields.push([String(parts[i]), String(parts[i + 1])]);
           }
 
-          // Append & return the ID as a BULK STRING
-          stream.entries.push({ id: idRaw, fields });
-          socket.write(bulkString(idRaw));
+          // Append entry & return final ID
+          stream.entries.push({ id: finalId, fields });
+          socket.write(bulkString(finalId));
           break;
         }
 
