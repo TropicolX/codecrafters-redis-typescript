@@ -184,7 +184,7 @@ function registerWaiter(w: XReadWaiter) {
 }
 
 function unregisterWaiter(w: XReadWaiter) {
-  clearTimeout(w.timer);
+  if (w.timer) clearTimeout(w.timer);
   for (const k of w.keys) {
     const set = waitersByKey.get(k);
     if (set) {
