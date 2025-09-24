@@ -800,10 +800,9 @@ const server = net.createServer((socket) => {
         }
 
         case 'XREAD': {
-          // Minimal syntax for this stage:
-          // XREAD streams <k1> <k2> ... <id1> <id2> ...
+          // XREAD streams <k1> [<k2> ...] <id1> [<id2> ...]
           if (
-            parts.length < 5 ||
+            parts.length < 4 ||
             String(parts[1]).toUpperCase() !== 'STREAMS'
           ) {
             socket.write(
@@ -812,8 +811,7 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          // After 'STREAMS', split the args into two equal halves: keys and ids
-          const after = parts.slice(2);
+          const after = parts.slice(2).map(String); // keys + ids
           if (after.length % 2 !== 0) {
             socket.write(
               errorString("ERR unmatched keys/ids for 'xread' command")
@@ -822,10 +820,10 @@ const server = net.createServer((socket) => {
           }
 
           const half = after.length / 2;
-          const keys = after.slice(0, half).map(String);
-          const ids = after.slice(half).map(String);
+          const keys = after.slice(0, half);
+          const ids = after.slice(half);
 
-          // WRONGTYPE if any key exists as non-stream in your string store
+          // WRONGTYPE: any key that exists as non-stream (adjust `db` to your KV store)
           for (const k of keys) {
             if (store?.has?.(k) && !streams.has(k)) {
               socket.write(
@@ -833,11 +831,10 @@ const server = net.createServer((socket) => {
                   'WRONGTYPE Operation against a key holding the wrong kind of value'
                 )
               );
-              return;
+              break;
             }
           }
 
-          // Build per-stream results (omit streams with no matches)
           const perStreamRESP: string[] = [];
 
           for (let i = 0; i < keys.length; i++) {
@@ -845,21 +842,16 @@ const server = net.createServer((socket) => {
             const startIdRaw = ids[i];
 
             const s = streams.get(key);
-            if (!s) {
-              // No such stream => no matches for this key (skip it)
-              continue;
-            }
+            if (!s) continue; // missing stream -> no matches for this key
 
-            const start = parseIdRaw(startIdRaw);
+            const start = parseIdRaw(startIdRaw); // your existing helper: "ms[-seq]" -> {ms, seq}
 
             // EXCLUSIVE: id > start
             const matches = s.entries.filter(
               (e) => cmpId(parseIdRaw(e.id), start) > 0
             );
-
             if (matches.length === 0) continue;
 
-            // Entry arrays: [ BulkString(id), Array(BulkString(field), BulkString(value), ...) ]
             const entryArrays = matches.map((e) => {
               const kv = e.fields.flatMap(([k, v]) => [
                 bulkString(k),
@@ -868,12 +860,10 @@ const server = net.createServer((socket) => {
               return array([bulkString(e.id), array(kv)]);
             });
 
-            // Per-key item: [ BulkString(key), Array(entryArrays...) ]
             perStreamRESP.push(array([bulkString(key), array(entryArrays)]));
           }
 
-          // If nothing matched across all streams, return empty array (adequate for this stage)
-          // (Real Redis returns Null Array *-1, but the tests don't require it.)
+          // For this stage, empty => empty array is fine (real Redis returns Null Array *-1)
           socket.write(array(perStreamRESP));
           break;
         }
