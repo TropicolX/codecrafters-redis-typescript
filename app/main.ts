@@ -171,7 +171,7 @@ type XReadWaiter = {
   socket: import('net').Socket;
   keys: string[];
   starts: ParsedId[]; // one per key, exclusive start
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
 };
 
 const waitersByKey = new Map<string, Set<XReadWaiter>>();
@@ -946,34 +946,42 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          // No matches now
-          if (blockMs === null || blockMs === 0) {
-            // Non-blocking (or BLOCK 0): return Null Array per spec for “no data”
-            socket.write(NULL_ARRAY);
+          // --- No matches right now ---
+          if (blockMs === null) {
+            // Non-blocking XREAD: return Null Array immediately
+            socket.write(NULL_ARRAY); // '*-1\r\n'
             break;
           }
 
-          // BLOCKING path: park this request until data arrives or timeout
+          // BLOCK specified:
+          // BLOCK 0 -> wait indefinitely
+          // BLOCK >0 -> wait up to blockMs
           const waiter: XReadWaiter = {
             socket,
             keys,
             starts,
+            // timer set below (or left undefined for BLOCK 0)
+            timer: undefined as unknown as NodeJS.Timeout,
+          };
+
+          // optional timeout only when blockMs > 0
+          if (blockMs > 0) {
             // @ts-ignore
-            timer: setTimeout(() => {
-              // Timeout: respond with Null Array and clean up
+            waiter.timer = setTimeout(() => {
               try {
                 socket.write(NULL_ARRAY);
               } catch {}
               unregisterWaiter(waiter);
-            }, blockMs),
-          };
+            }, blockMs);
+          }
 
-          // Clean up if client disconnects
+          // Cleanup if client disconnects
           const onClose = () => unregisterWaiter(waiter);
           socket.once('close', onClose);
           socket.once('end', onClose);
           socket.once('error', onClose as any);
 
+          // Park the waiter (no timer means BLOCK 0 -> wait forever)
           registerWaiter(waiter);
           break;
         }
