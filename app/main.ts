@@ -111,16 +111,14 @@ function parseIdRaw(id: string): { ms: bigint; seq: bigint } {
   return { ms, seq };
 }
 
-function normalizeStartId(id: string): { ms: bigint; seq: bigint } {
-  // "123"  -> 123-0
-  // "123-4" stays 123-4
+function normalizeStart(id: string): ParsedId {
+  // "123" -> 123-0 ; "123-4" stays
   const [msStr, seqStr] = id.split('-', 2);
   return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : 0n };
 }
 
-function normalizeEndId(id: string): { ms: bigint; seq: bigint } {
-  // "123"  -> 123-MAX_SEQ
-  // "123-4" stays 123-4
+function normalizeEnd(id: string): ParsedId {
+  // "123" -> 123-MAX ; "123-4" stays
   const [msStr, seqStr] = id.split('-', 2);
   return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : MAX_SEQ };
 }
@@ -756,7 +754,7 @@ const server = net.createServer((socket) => {
           const startRaw = String(parts[2]);
           const endRaw = String(parts[3]);
 
-          // If key exists as a string (SET/GET map), that's a WRONGTYPE for streams
+          // WRONGTYPE if key is a string value
           if (store?.has?.(key) && !streams.has(key)) {
             socket.write(
               errorString(
@@ -766,35 +764,35 @@ const server = net.createServer((socket) => {
             break;
           }
 
-          // Missing key => empty array
+          // Missing stream => empty array
           if (!streams.has(key)) {
             socket.write(encodeArrayOfBulk(...[]));
             break;
           }
 
-          const start = normalizeStartId(startRaw);
-          const end = normalizeEndId(endRaw);
+          const start = normalizeStart(startRaw);
+          const end = normalizeEnd(endRaw);
 
           const s = streams.get(key)!;
 
-          // entries are stored with raw id "ms-seq"; parse for comparison
-          const inRange = s.entries.filter((e) => {
+          // Filter entries inclusively by parsed id
+          const result = s.entries.filter((e) => {
             const id = parseIdRaw(e.id);
             return cmpId(start, id) <= 0 && cmpId(id, end) <= 0;
           });
 
-          // RESP: Array of [ id, [ field1, value1, field2, value2, ... ] ]
-          const respEntries = inRange.map((e) => {
-            const kvList = e.fields.flatMap(([k, v]) => [
+          // RESP: Array of [ BulkString(id), Array( BulkString(field), BulkString(value), ... ) ]
+          const resp = result.map((e) => {
+            const kv = e.fields.flatMap(([k, v]) => [
               bulkString(k),
               bulkString(v),
             ]);
             return encodeArrayOfBulk(
-              ...[bulkString(e.id), encodeArrayOfBulk(...kvList)]
+              ...[bulkString(e.id), encodeArrayOfBulk(...kv)]
             );
           });
 
-          socket.write(encodeArrayOfBulk(...respEntries));
+          socket.write(encodeArrayOfBulk(...resp));
           break;
         }
 
