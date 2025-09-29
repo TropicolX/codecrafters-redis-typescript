@@ -17,6 +17,8 @@ import type {
   Parts,
 } from './types';
 import type { Socket } from 'node:net';
+import { RESPDecoder } from './resp';
+import { GET, INFO, PSYNC, REPLCONF, SET } from './command-handlers';
 
 // Time helpers
 export const nowMs = () => Date.now();
@@ -306,9 +308,137 @@ export function resolveReplicaOfFromArgv(argv: string[]) {
   return undefined;
 }
 
+export function dispatchCommand(
+  socket: Socket,
+  parts: Parts,
+  state: ServerState,
+  source: 'client' | 'replication' = 'client'
+) {
+  if (!parts || parts.length === 0) return;
+
+  const cmd = String(parts[0]).toUpperCase();
+  switch (cmd) {
+    case 'PING' /* your existing PING inline or handler */:
+      // If source === 'replication', master will never send us PING after sync in this challenge,
+      // but blackhole socket would swallow replies anyway.
+      // socket.write(simpleString('PONG'));
+      break;
+
+    case 'INFO':
+      INFO(socket, parts, state);
+      break;
+    case 'REPLCONF':
+      REPLCONF(socket, parts, state);
+      break;
+    case 'PSYNC':
+      PSYNC(socket, parts, state);
+      break;
+
+    // Writes
+    case 'SET':
+      SET(socket, parts, state);
+      break;
+    case 'DEL':
+      // DEL?.(socket, parts, state);
+      break;
+    case 'XADD':
+      // XADD?.(socket, parts, state);
+      break;
+    // ... add other commands you support
+
+    // Reads
+    case 'GET':
+      GET(socket, parts);
+      break;
+    // ...
+
+    default:
+      // optionally ignore unknowns
+      break;
+  }
+}
+
+function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
+  let phase:
+    | 'await_fullresync'
+    | 'await_rdb_header'
+    | 'await_rdb_body'
+    | 'stream_cmds' = 'await_fullresync';
+  let buf = Buffer.alloc(0);
+  let rdbLen = 0;
+
+  // Decoder for the command stream phase
+  const decoder = new RESPDecoder();
+  const sink = blackholeSocket(); // handlers will write to this, which discards replies
+
+  sock.on('data', (chunk) => {
+    buf = Buffer.concat([buf, chunk] as any);
+    processBuffer();
+  });
+
+  function processBuffer() {
+    while (true) {
+      if (phase === 'await_fullresync') {
+        const i = indexOfCrlf(buf);
+        if (i < 0) return; // need more data
+        const line = buf.slice(0, i).toString('utf8'); // e.g., +FULLRESYNC <id> 0
+        buf = buf.slice(i + 2);
+        // (We can optionally validate it starts with +FULLRESYNC)
+        phase = 'await_rdb_header';
+      }
+
+      if (phase === 'await_rdb_header') {
+        // Need: $<len>\r\n
+        if (buf.length < 4) return;
+        if (buf[0] !== 0x24 /* '$' */) return; // malformed, but for this challenge assume correct
+        const crlfAt = indexOfCrlf(buf);
+        if (crlfAt < 0) return;
+        const lenStr = buf.slice(1, crlfAt).toString('ascii');
+        rdbLen = Number(lenStr);
+        buf = buf.slice(crlfAt + 2);
+        phase = 'await_rdb_body';
+      }
+
+      if (phase === 'await_rdb_body') {
+        if (buf.length < rdbLen) return; // wait for full RDB body
+        // Consume the RDB bytes (we ignore content; state is assumed empty)
+        buf = buf.slice(rdbLen);
+        phase = 'stream_cmds';
+        // loop to process any remaining bytes as commands
+      }
+
+      if (phase === 'stream_cmds') {
+        // Feed whatever we have into the RESP decoder
+        const frames = decoder.push(buf);
+        buf = Buffer.alloc(0);
+        for (const parts of frames) {
+          if (!parts || parts.length === 0) continue;
+          // Apply the command using normal dispatcher, but with blackhole socket (no replies)
+          // CRITICAL: do NOT propagate further; ensure propagateToReplicas checks state.role === 'master'
+          dispatchCommand(
+            sink,
+            parts as Parts,
+            state,
+            /*source=*/ 'replication'
+          );
+        }
+        return; // nothing else to do until more data arrives
+      }
+    }
+  }
+}
+
+function indexOfCrlf(b: Buffer): number {
+  for (let i = 0; i + 1 < b.length; i++) {
+    if (b[i] === 13 && b[i + 1] === 10) return i; // \r\n
+  }
+  return -1;
+}
+
 export function startReplicaLink(
   replicaOf: ReplicaOfConfig,
-  listeningPort: number
+  listeningPort: number,
+  state: ServerState
 ) {
   const master = net.createConnection(
     { host: replicaOf.host, port: replicaOf.port },
@@ -317,10 +447,9 @@ export function startReplicaLink(
       master.write(array([bulkString('PING')]));
     }
   );
-
   master.setNoDelay(true);
 
-  // After PING response (+PONG)
+  // After PING response
   master.once('data', () => {
     // 2a) REPLCONF listening-port <PORT>
     master.write(
@@ -333,7 +462,7 @@ export function startReplicaLink(
 
     // After OK to listening-port
     master.once('data', () => {
-      // 2b) REPLCONF capa eof capa psync2  (single command, 5 tokens)
+      // 2b) REPLCONF capa eof capa psync2
       master.write(
         array([
           bulkString('REPLCONF'),
@@ -344,24 +473,21 @@ export function startReplicaLink(
         ])
       );
 
-      // After OK to capabilities
+      // After OK to capa
       master.once('data', () => {
         // 3) PSYNC ? -1
         master.write(
           array([bulkString('PSYNC'), bulkString('?'), bulkString('-1')])
         );
 
-        // We can ignore what comes back here for this stage.
+        // --- From here: receive +FULLRESYNC <id> 0, then $<len>\r\n<bytes>, then commands ---
+        startReplicaStreamConsumer(master, state);
       });
     });
   });
 
-  master.on('error', () => {
-    /* ignore for this stage */
-  });
-  master.on('close', () => {
-    /* optional: reconnect later */
-  });
+  master.on('error', () => {});
+  master.on('close', () => {});
 
   return master;
 }
@@ -397,19 +523,17 @@ export function propagateToReplicas(
   parts: Parts,
   source?: Socket
 ) {
+  if (state.role !== 'master') return; // <- important
   if (!state.replicas || state.replicas.size === 0) return;
+
   const payload = encodeCommandForReplication(parts);
   for (const sock of state.replicas) {
-    // avoid echoing back to the replica if somehow the source is the replica socket
     if (source && sock === source) continue;
     try {
       sock.write(payload);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
 }
-
 export function isWriteCommand(cmd: string): boolean {
   switch (cmd) {
     case 'SET':
@@ -420,4 +544,11 @@ export function isWriteCommand(cmd: string): boolean {
     default:
       return false;
   }
+}
+
+export function blackholeSocket(): Socket {
+  // Only write() is used by our handlers; the rest can be no-ops.
+  return {
+    write: (_chunk: any) => true,
+  } as Socket;
 }
