@@ -19,12 +19,14 @@ import {
   parseIdStrict,
   registerWaiter,
   resolveXReadStart,
+  sendBulkBytes,
   serveWaitersForKey,
   simpleString,
   unregisterWaiter,
 } from './utils';
 import {
   blockedByKey,
+  EMPTY_RDB_BYTES,
   NULL_ARRAY,
   NULL_BULK,
   store,
@@ -762,7 +764,6 @@ export function REPLCONF(socket: Socket, _parts: Parts, _state: ServerState) {
 }
 
 export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
-  // Expect: ["PSYNC", "?", "-1"] — the tester won’t nitpick, but guard lightly.
   if (parts.length < 3) {
     socket.write(
       errorString("ERR wrong number of arguments for 'psync' command")
@@ -770,10 +771,11 @@ export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
     return;
   }
 
-  // For this stage, always send FULLRESYNC with our master repl id and offset 0.
-  // (Use your initialized value; fall back to the sample if undefined.)
+  // For this stage, always FULLRESYNC with master repl id + offset 0
   const replId =
     state.masterReplId ?? '8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb';
-  // Offset is 0 for this stage.
   socket.write(simpleString(`FULLRESYNC ${replId} 0`));
+
+  // Immediately send the empty RDB as: $<len>\r\n<bytes> (no trailing CRLF)
+  sendBulkBytes(socket, EMPTY_RDB_BYTES);
 }

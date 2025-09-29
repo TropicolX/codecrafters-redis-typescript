@@ -363,3 +363,21 @@ export function startReplicaLink(
 
   return master;
 }
+
+export function bufferFromHex(hex: string): Buffer {
+  const clean = hex.replace(/\s+/g, '').toLowerCase();
+  return Buffer.from(clean, 'hex');
+}
+
+export function bufferFromBase64(b64: string): Buffer {
+  return Buffer.from(b64.replace(/\s+/g, ''), 'base64');
+}
+
+/**
+ * Send a raw-binary payload as: $<len>\r\n<bytes>
+ * Note: no trailing CRLF after the bytes (this is NOT a RESP bulk string terminator).
+ */
+export function sendBulkBytes(socket: import('net').Socket, bytes: Buffer) {
+  const hdr = Buffer.from(`$${bytes.length}\r\n`);
+  socket.write(Buffer.concat([hdr, bytes] as any) as any);
+}
