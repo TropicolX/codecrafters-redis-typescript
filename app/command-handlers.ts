@@ -733,11 +733,26 @@ export const XREAD = (socket: Socket, parts: Parts) => {
 };
 
 export function INFO(socket: Socket, parts: Parts, state: ServerState) {
+  // Stage guarantees "INFO replication", so we can accept that and ignore others
   if (parts.length >= 2 && String(parts[1]).toLowerCase() !== 'replication') {
     socket.write(
       errorString('ERR only replication section is supported in this stage')
     );
     return;
   }
-  socket.write(bulkString(`role:${state.role}`)); // ← use state.role
+
+  const lines: string[] = [];
+  lines.push(`role:${state.role}`);
+
+  // For this stage, tester runs against a master instance.
+  // Include master_replid and master_repl_offset when available.
+  if (state.masterReplId != null) {
+    lines.push(`master_replid:${state.masterReplId}`);
+  }
+  if (state.masterReplOffset != null) {
+    lines.push(`master_repl_offset:${state.masterReplOffset}`);
+  }
+
+  // Join lines with CRLF inside the bulk string (no trailing CRLF needed)
+  socket.write(bulkString(lines.join('\r\n')));
 }

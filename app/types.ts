@@ -35,5 +35,6 @@ export interface ReplicaOfConfig {
 
 export interface ServerState {
   role: Role;
-  replicaOf?: ReplicaOfConfig; // set when running as a replica
+  masterReplId?: string;
+  masterReplOffset?: number;
 }
