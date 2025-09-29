@@ -17,7 +17,6 @@ import {
   nowMsBigInt,
   parseIdRaw,
   parseIdStrict,
-  propagateToReplicas,
   registerWaiter,
   resolveXReadStart,
   sendBulkBytes,

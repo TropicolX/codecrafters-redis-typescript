@@ -376,6 +376,27 @@ function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
     processBuffer();
   });
 
+  function handleDecoded(parts: any[]) {
+    if (!parts || parts.length === 0) return;
+
+    const cmd = String(parts[0]).toUpperCase();
+    if (cmd === 'REPLCONF' && parts.length >= 3) {
+      const sub = String(parts[1]).toUpperCase();
+      if (sub === 'GETACK') {
+        // Reply with: REPLCONF ACK 0 (offset hardcoded to 0 for this stage)
+        const ack = array([
+          bulkString('REPLCONF'),
+          bulkString('ACK'),
+          bulkString('0'),
+        ]);
+        sock.write(ack);
+        return; // don't dispatch this further
+      }
+    }
+    // For all other propagated commands: apply state changes silently (no reply)
+    dispatchCommand(sink, parts, state, 'replication');
+  }
+
   function processBuffer() {
     while (true) {
       if (phase === 'await_fullresync') {
@@ -411,17 +432,7 @@ function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
         // Feed whatever we have into the RESP decoder
         const frames = decoder.push(buf);
         buf = Buffer.alloc(0);
-        for (const parts of frames) {
-          if (!parts || parts.length === 0) continue;
-          // Apply the command using normal dispatcher, but with blackhole socket (no replies)
-          // CRITICAL: do NOT propagate further; ensure propagateToReplicas checks state.role === 'master'
-          dispatchCommand(
-            sink,
-            parts as Parts,
-            state,
-            /*source=*/ 'replication'
-          );
-        }
+        for (const parts of frames) handleDecoded(parts);
         return; // nothing else to do until more data arrives
       }
     }
