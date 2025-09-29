@@ -126,6 +126,6 @@ const server = net.createServer((socket) => {
 
 const PORT = resolvePortFromArgv(process.argv, 6379);
 
-server.listen(6379, () => {
+server.listen(PORT, () => {
   console.log(`[your_program] Mini-Redis listening on ${PORT}`);
 });
