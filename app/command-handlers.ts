@@ -734,13 +734,10 @@ export const XREAD = (socket: Socket, parts: Parts) => {
 
 export function INFO(socket: Socket, parts: Parts, state: ServerState) {
   if (parts.length >= 2 && String(parts[1]).toLowerCase() !== 'replication') {
-    // Only replication is required in this stage
     socket.write(
       errorString('ERR only replication section is supported in this stage')
     );
     return;
   }
-  // Required field for this stage
-  const roleLine = `role:${state.role}`;
-  socket.write(bulkString(roleLine));
+  socket.write(bulkString(`role:${state.role}`)); // ← use state.role
 }

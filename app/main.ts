@@ -30,8 +30,8 @@ const replicaOf = resolveReplicaOfFromArgv(process.argv);
 const PORT = resolvePortFromArgv(process.argv, 6379);
 
 const state: ServerState = {
-  role: replicaOf ? 'slave' : 'master',
-  replicaOf: replicaOf,
+  role: replicaOf ? ('slave' as const) : 'master',
+  replicaOf,
 };
 
 const server = net.createServer((socket) => {
@@ -144,5 +144,7 @@ const server = net.createServer((socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[your_program] Mini-Redis listening on ${PORT}`);
+  console.log(
+    `[your_program] Mini-Redis listening on ${PORT} (role=${state.role})`
+  );
 });

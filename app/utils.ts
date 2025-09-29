@@ -235,30 +235,63 @@ export function resolvePortFromArgv(argv: string[], fallback = 6379): number {
   return port!;
 }
 
-export function resolveReplicaOfFromArgv(
-  argv: string[]
-): { host: string; port: number } | undefined {
+// utils.ts
+function stripQuotes(s: string) {
+  return s.replace(/^["']|["']$/g, '');
+}
+
+function parseHostPort(one: string, two?: string) {
+  const first = stripQuotes(one).trim();
+  if (two != null) {
+    const host = stripQuotes(first).trim();
+    const port = Number(stripQuotes(two).trim());
+    if (host && Number.isFinite(port) && port >= 1 && port <= 65535)
+      return { host, port };
+    return undefined;
+  }
+  // single token that may contain space or colon
+  const val = first;
+  let host = '';
+  let portStr = '';
+  if (val.includes(' ')) {
+    [host, portStr] = val.split(/\s+/, 2);
+  } else if (val.includes(':')) {
+    [host, portStr] = val.split(':', 2);
+  } else {
+    return undefined;
+  }
+  const port = Number(stripQuotes(portStr).trim());
+  if (host && Number.isFinite(port) && port >= 1 && port <= 65535)
+    return { host, port };
+  return undefined;
+}
+
+export function resolveReplicaOfFromArgv(argv: string[]) {
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
 
-    // --replicaof=host:port
+    // --replicaof=...
     if (arg.startsWith('--replicaof=')) {
-      const v = arg.slice('--replicaof='.length).trim();
-      const [h, pStr] = v.includes(':') ? v.split(':', 2) : v.split(/\s+/, 2);
-      const port = Number(pStr);
-      if (h && Number.isFinite(port) && port >= 1 && port <= 65535)
-        return { host: h, port };
-      return undefined;
+      const v = arg.slice('--replicaof='.length);
+      return parseHostPort(v);
     }
 
     if (arg === '--replicaof') {
-      const host = argv[i + 1];
-      const pStr = argv[i + 2];
-      const port = Number(pStr);
-      if (host && Number.isFinite(port) && port >= 1 && port <= 65535) {
-        return { host, port };
+      const next = argv[i + 1];
+      const next2 = argv[i + 2];
+
+      // cases:
+      //  - --replicaof "localhost 6379"   -> next = "localhost 6379" (single token)
+      //  - --replicaof localhost 6379     -> next = "localhost", next2 = "6379"
+      if (!next) return undefined;
+
+      // try two-token form first
+      if (next2) {
+        const parsed = parseHostPort(next, next2);
+        if (parsed) return parsed;
       }
-      return undefined;
+      // fall back to single-token split
+      return parseHostPort(next);
     }
   }
   return undefined;
