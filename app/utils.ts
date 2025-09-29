@@ -1,3 +1,4 @@
+import net from 'net';
 import {
   blockedByKey,
   MAX_SEQ,
@@ -6,7 +7,13 @@ import {
   waiterBySocket,
   waitersByKey,
 } from './store';
-import type { Entry, Waiter, ParsedId, XReadWaiter } from './types';
+import type {
+  Entry,
+  Waiter,
+  ParsedId,
+  XReadWaiter,
+  ReplicaOfConfig,
+} from './types';
 import type { Socket } from 'node:net';
 
 // Time helpers
@@ -295,4 +302,32 @@ export function resolveReplicaOfFromArgv(argv: string[]) {
     }
   }
   return undefined;
+}
+
+export function startReplicaLink(replicaOf: ReplicaOfConfig) {
+  const master = net.createConnection(
+    { host: replicaOf.host, port: replicaOf.port },
+    () => {
+      // Send PING as RESP Array: *1\r\n$4\r\nPING\r\n
+      const ping = array([bulkString('PING')]);
+      master.write(ping);
+    }
+  );
+
+  // (Optional) you can log/ignore the response; not needed for the test
+  master.on('data', () => {
+    /* ignore master replies for this stage */
+  });
+
+  master.on('error', () => {
+    /* ignore / optionally retry in later stages */
+  });
+  master.on('close', () => {
+    /* optional: handle reconnect later */
+  });
+
+  // Small nicety for latency
+  master.setNoDelay(true);
+
+  return master; // keep a reference on state later if you want
 }

@@ -37,4 +37,10 @@ export interface ServerState {
   role: Role;
   masterReplId?: string;
   masterReplOffset?: number;
+  replicaOf?: ReplicaOfConfig;
+}
+
+export interface ReplicaOfConfig {
+  host: string;
+  port: number;
 }

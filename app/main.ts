@@ -5,6 +5,7 @@ import {
   errorString,
   resolvePortFromArgv,
   resolveReplicaOfFromArgv,
+  startReplicaLink,
 } from './utils';
 import { waiterBySocket } from './store';
 import {
@@ -31,12 +32,17 @@ const PORT = resolvePortFromArgv(process.argv, 6379);
 
 const state: ServerState = {
   role: replicaOf ? ('slave' as const) : 'master',
+  replicaOf,
 };
 
 if (state.role === 'master') {
   // Hardcode a 40-char ID per stage requirements (any alphanumeric 40 chars is fine)
   state.masterReplId = '8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb';
   state.masterReplOffset = 0;
+}
+
+if (state.role === 'slave' && state.replicaOf) {
+  startReplicaLink(state.replicaOf);
 }
 
 const server = net.createServer((socket) => {
