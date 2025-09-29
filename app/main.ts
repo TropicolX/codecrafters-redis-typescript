@@ -1,11 +1,12 @@
 import net from 'node:net';
 import { RESPDecoder } from './resp';
 import { cleanupWaiter, errorString, resolvePortFromArgv } from './utils';
-import { waiterBySocket } from './store';
+import { state, waiterBySocket } from './store';
 import {
   BLPOP,
   ECHO,
   GET,
+  INFO,
   LLEN,
   LPOP,
   LPUSH,
@@ -99,6 +100,10 @@ const server = net.createServer((socket) => {
           XREAD(socket, parts);
           break;
         }
+
+        case 'INFO':
+          INFO(socket, parts, state);
+          break;
 
         default: {
           socket.write(

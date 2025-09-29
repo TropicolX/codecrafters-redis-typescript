@@ -25,3 +25,9 @@ export type XReadWaiter = {
 };
 
 export type Parts = (string | null)[];
+
+export type Role = 'master' | 'slave';
+
+export interface ServerState {
+  role: Role; // default 'master' for now
+}

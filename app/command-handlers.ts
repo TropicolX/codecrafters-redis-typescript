@@ -31,7 +31,7 @@ import {
   streams,
   waiterBySocket,
 } from './store';
-import type { Parts, Waiter, XReadWaiter } from './types';
+import type { Parts, ServerState, Waiter, XReadWaiter } from './types';
 
 export const PING = (socket: Socket, parts: Parts) => {
   socket.write(simpleString('PONG'));
@@ -731,3 +731,19 @@ export const XREAD = (socket: Socket, parts: Parts) => {
   registerWaiter(waiter);
   return;
 };
+
+export function INFO(socket: Socket, parts: Parts, state: ServerState) {
+  // Accept: INFO replication   (case-insensitive)
+  if (parts.length >= 2 && String(parts[1]).toLowerCase() !== 'replication') {
+    // Not required for this stage, but returning something sane:
+    socket.write(
+      errorString('ERR only replication section is supported in this stage')
+    );
+    return;
+  }
+
+  // Stage requirement: respond with a Bulk String containing "role:master"
+  // (You can use state.role if you want to future-proof.)
+  const roleLine = `role:${state.role ?? 'master'}`;
+  socket.write(bulkString(roleLine));
+}
