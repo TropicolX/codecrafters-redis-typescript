@@ -18,6 +18,7 @@ import {
   LPUSH,
   LRANGE,
   PING,
+  PSYNC,
   REPLCONF,
   RPUSH,
   SET,
@@ -71,6 +72,10 @@ const server = net.createServer((socket) => {
           REPLCONF(socket, parts, state);
           break;
         }
+
+        case 'PSYNC':
+          PSYNC(socket, parts, state);
+          break;
 
         case 'SET': {
           SET(socket, parts);
