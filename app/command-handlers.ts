@@ -756,3 +756,7 @@ export function INFO(socket: Socket, parts: Parts, state: ServerState) {
   // Join lines with CRLF inside the bulk string (no trailing CRLF needed)
   socket.write(bulkString(lines.join('\r\n')));
 }
+
+export function REPLCONF(socket: Socket, _parts: Parts, _state: ServerState) {
+  socket.write(simpleString('OK')); // -> "+OK\r\n"
+}

@@ -18,6 +18,7 @@ import {
   LPUSH,
   LRANGE,
   PING,
+  REPLCONF,
   RPUSH,
   SET,
   TYPE,
@@ -63,6 +64,11 @@ const server = net.createServer((socket) => {
 
         case 'ECHO': {
           ECHO(socket, parts);
+          break;
+        }
+
+        case 'REPLCONF': {
+          REPLCONF(socket, parts, state);
           break;
         }
 
