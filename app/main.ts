@@ -42,7 +42,7 @@ if (state.role === 'master') {
 }
 
 if (state.role === 'slave' && state.replicaOf) {
-  startReplicaLink(state.replicaOf);
+  startReplicaLink(state.replicaOf, PORT);
 }
 
 const server = net.createServer((socket) => {

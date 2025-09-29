@@ -304,30 +304,48 @@ export function resolveReplicaOfFromArgv(argv: string[]) {
   return undefined;
 }
 
-export function startReplicaLink(replicaOf: ReplicaOfConfig) {
+export function startReplicaLink(
+  replicaOf: ReplicaOfConfig,
+  listeningPort: number
+) {
   const master = net.createConnection(
     { host: replicaOf.host, port: replicaOf.port },
     () => {
-      // Send PING as RESP Array: *1\r\n$4\r\nPING\r\n
-      const ping = array([bulkString('PING')]);
-      master.write(ping);
+      // 1) PING
+      master.write(array([bulkString('PING')]));
     }
   );
 
-  // (Optional) you can log/ignore the response; not needed for the test
-  master.on('data', () => {
-    /* ignore master replies for this stage */
-  });
-
-  master.on('error', () => {
-    /* ignore / optionally retry in later stages */
-  });
-  master.on('close', () => {
-    /* optional: handle reconnect later */
-  });
-
-  // Small nicety for latency
   master.setNoDelay(true);
 
-  return master; // keep a reference on state later if you want
+  // 2) After PING response, send: REPLCONF listening-port <PORT>
+  master.once('data', () => {
+    const replconfListening = array([
+      bulkString('REPLCONF'),
+      bulkString('listening-port'),
+      bulkString(String(listeningPort)),
+    ]);
+    master.write(replconfListening);
+
+    // 3) After OK, send: REPLCONF capa psync2
+    master.once('data', () => {
+      const replconfCapa = array([
+        bulkString('REPLCONF'),
+        bulkString('capa'),
+        bulkString('psync2'),
+      ]);
+      master.write(replconfCapa);
+      // (we keep the connection open for later stages: PSYNC, streaming, etc.)
+    });
+  });
+
+  // Optional: ignore/trace master replies for now
+  master.on('error', () => {
+    /* noop for this stage */
+  });
+  master.on('close', () => {
+    /* reconnect later if you want */
+  });
+
+  return master;
 }
