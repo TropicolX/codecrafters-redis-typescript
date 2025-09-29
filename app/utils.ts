@@ -13,6 +13,8 @@ import type {
   ParsedId,
   XReadWaiter,
   ReplicaOfConfig,
+  ServerState,
+  Parts,
 } from './types';
 import type { Socket } from 'node:net';
 
@@ -380,4 +382,42 @@ export function bufferFromBase64(b64: string): Buffer {
 export function sendBulkBytes(socket: import('net').Socket, bytes: Buffer) {
   const hdr = Buffer.from(`$${bytes.length}\r\n`);
   socket.write(Buffer.concat([hdr, bytes] as any) as any);
+}
+
+export function encodeCommandForReplication(parts: Parts): string {
+  return array(
+    parts.map((p, i) =>
+      bulkString(i === 0 ? String(p).toUpperCase() : String(p))
+    )
+  );
+}
+
+export function propagateToReplicas(
+  state: ServerState,
+  parts: Parts,
+  source?: Socket
+) {
+  if (!state.replicas || state.replicas.size === 0) return;
+  const payload = encodeCommandForReplication(parts);
+  for (const sock of state.replicas) {
+    // avoid echoing back to the replica if somehow the source is the replica socket
+    if (source && sock === source) continue;
+    try {
+      sock.write(payload);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function isWriteCommand(cmd: string): boolean {
+  switch (cmd) {
+    case 'SET':
+    case 'DEL':
+    case 'XADD':
+      // add others as you implement replication for them
+      return true;
+    default:
+      return false;
+  }
 }

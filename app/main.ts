@@ -3,6 +3,8 @@ import { RESPDecoder } from './resp';
 import {
   cleanupWaiter,
   errorString,
+  isWriteCommand,
+  propagateToReplicas,
   resolvePortFromArgv,
   resolveReplicaOfFromArgv,
   startReplicaLink,
@@ -78,7 +80,7 @@ const server = net.createServer((socket) => {
           break;
 
         case 'SET': {
-          SET(socket, parts);
+          SET(socket, parts, state);
           break;
         }
 
@@ -147,6 +149,10 @@ const server = net.createServer((socket) => {
           );
           break;
         }
+      }
+
+      if (isWriteCommand(cmd)) {
+        propagateToReplicas(state, parts, socket);
       }
     }
   });

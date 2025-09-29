@@ -17,6 +17,7 @@ import {
   nowMsBigInt,
   parseIdRaw,
   parseIdStrict,
+  propagateToReplicas,
   registerWaiter,
   resolveXReadStart,
   sendBulkBytes,
@@ -35,7 +36,7 @@ import {
 } from './store';
 import type { Parts, ServerState, Waiter, XReadWaiter } from './types';
 
-export const PING = (socket: Socket, parts: Parts) => {
+export const PING = (socket: Socket, _: Parts) => {
   socket.write(simpleString('PONG'));
 };
 
@@ -50,7 +51,7 @@ export const ECHO = (socket: Socket, parts: Parts) => {
   }
 };
 
-export const SET = (socket: Socket, parts: Parts) => {
+export const SET = (socket: Socket, parts: Parts, state: ServerState) => {
   const key = parts[1];
   const val = parts[2];
   if (typeof key !== 'string' || typeof val !== 'string') {
@@ -771,11 +772,17 @@ export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
     return;
   }
 
-  // For this stage, always FULLRESYNC with master repl id + offset 0
   const replId =
     state.masterReplId ?? '8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb';
   socket.write(simpleString(`FULLRESYNC ${replId} 0`));
-
-  // Immediately send the empty RDB as: $<len>\r\n<bytes> (no trailing CRLF)
   sendBulkBytes(socket, EMPTY_RDB_BYTES);
+
+  // ---- NEW: register this socket as an active replica link
+  if (!state.replicas) state.replicas = new Set();
+  state.replicas.add(socket);
+
+  const cleanup = () => state.replicas!.delete(socket);
+  socket.once('close', cleanup);
+  socket.once('end', cleanup);
+  socket.once('error', cleanup as any);
 }
