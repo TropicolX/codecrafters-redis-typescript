@@ -28,6 +28,12 @@ export type Parts = (string | null)[];
 
 export type Role = 'master' | 'slave';
 
+export interface ReplicaOfConfig {
+  host: string;
+  port: number;
+}
+
 export interface ServerState {
-  role: Role; // default 'master' for now
+  role: Role;
+  replicaOf?: ReplicaOfConfig; // set when running as a replica
 }

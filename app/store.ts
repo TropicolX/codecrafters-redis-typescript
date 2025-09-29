@@ -1,7 +1,5 @@
 import type { Socket } from 'node:net';
-import type { Entry, ServerState, Stream, Waiter, XReadWaiter } from './types';
-
-export const state: ServerState = { role: 'master' };
+import type { Entry, Stream, Waiter, XReadWaiter } from './types';
 
 export const streams = new Map<string, Stream>(); // key -> stream
 

@@ -1,7 +1,12 @@
 import net from 'node:net';
 import { RESPDecoder } from './resp';
-import { cleanupWaiter, errorString, resolvePortFromArgv } from './utils';
-import { state, waiterBySocket } from './store';
+import {
+  cleanupWaiter,
+  errorString,
+  resolvePortFromArgv,
+  resolveReplicaOfFromArgv,
+} from './utils';
+import { waiterBySocket } from './store';
 import {
   BLPOP,
   ECHO,
@@ -19,6 +24,15 @@ import {
   XRANGE,
   XREAD,
 } from './command-handlers';
+import type { ServerState } from './types';
+
+const replicaOf = resolveReplicaOfFromArgv(process.argv);
+const PORT = resolvePortFromArgv(process.argv, 6379);
+
+const state: ServerState = {
+  role: replicaOf ? 'slave' : 'master',
+  replicaOf: replicaOf,
+};
 
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
@@ -128,8 +142,6 @@ const server = net.createServer((socket) => {
     if (w) cleanupWaiter(w);
   });
 });
-
-const PORT = resolvePortFromArgv(process.argv, 6379);
 
 server.listen(PORT, () => {
   console.log(`[your_program] Mini-Redis listening on ${PORT}`);

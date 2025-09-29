@@ -733,17 +733,14 @@ export const XREAD = (socket: Socket, parts: Parts) => {
 };
 
 export function INFO(socket: Socket, parts: Parts, state: ServerState) {
-  // Accept: INFO replication   (case-insensitive)
   if (parts.length >= 2 && String(parts[1]).toLowerCase() !== 'replication') {
-    // Not required for this stage, but returning something sane:
+    // Only replication is required in this stage
     socket.write(
       errorString('ERR only replication section is supported in this stage')
     );
     return;
   }
-
-  // Stage requirement: respond with a Bulk String containing "role:master"
-  // (You can use state.role if you want to future-proof.)
-  const roleLine = `role:${state.role ?? 'master'}`;
+  // Required field for this stage
+  const roleLine = `role:${state.role}`;
   socket.write(bulkString(roleLine));
 }

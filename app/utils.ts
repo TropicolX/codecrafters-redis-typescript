@@ -220,32 +220,46 @@ export function resolvePortFromArgv(argv: string[], fallback = 6379): number {
 
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
-
     if (arg === '--port' || arg === '-p') {
       const next = argv[i + 1];
-      if (next && !next.startsWith('-')) {
-        port = Number(next);
-      }
+      port = Number(next);
       break;
     }
-
-    // Support --port=6380 form
     if (arg.startsWith('--port=')) {
       port = Number(arg.split('=')[1]);
       break;
     }
   }
 
-  // Validate
-  if (
-    port == null ||
-    !Number.isFinite(port) ||
-    port % 1 !== 0 ||
-    port < 1 ||
-    port > 65535
-  ) {
-    return fallback;
-  }
+  if (!Number.isFinite(port!) || port! < 1 || port! > 65535) return fallback;
+  return port!;
+}
 
-  return port;
+export function resolveReplicaOfFromArgv(
+  argv: string[]
+): { host: string; port: number } | undefined {
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+
+    // --replicaof=host:port
+    if (arg.startsWith('--replicaof=')) {
+      const v = arg.slice('--replicaof='.length).trim();
+      const [h, pStr] = v.includes(':') ? v.split(':', 2) : v.split(/\s+/, 2);
+      const port = Number(pStr);
+      if (h && Number.isFinite(port) && port >= 1 && port <= 65535)
+        return { host: h, port };
+      return undefined;
+    }
+
+    if (arg === '--replicaof') {
+      const host = argv[i + 1];
+      const pStr = argv[i + 2];
+      const port = Number(pStr);
+      if (host && Number.isFinite(port) && port >= 1 && port <= 65535) {
+        return { host, port };
+      }
+      return undefined;
+    }
+  }
+  return undefined;
 }
