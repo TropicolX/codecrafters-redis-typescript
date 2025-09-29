@@ -318,33 +318,47 @@ export function startReplicaLink(
 
   master.setNoDelay(true);
 
-  // 2) After PING response, send: REPLCONF listening-port <PORT>
+  // After PING response (+PONG)
   master.once('data', () => {
-    const replconfListening = array([
-      bulkString('REPLCONF'),
-      bulkString('listening-port'),
-      bulkString(String(listeningPort)),
-    ]);
-    master.write(replconfListening);
-
-    // 3) After OK, send: REPLCONF capa psync2
-    master.once('data', () => {
-      const replconfCapa = array([
+    // 2a) REPLCONF listening-port <PORT>
+    master.write(
+      array([
         bulkString('REPLCONF'),
-        bulkString('capa'),
-        bulkString('psync2'),
-      ]);
-      master.write(replconfCapa);
-      // (we keep the connection open for later stages: PSYNC, streaming, etc.)
+        bulkString('listening-port'),
+        bulkString(String(listeningPort)),
+      ])
+    );
+
+    // After OK to listening-port
+    master.once('data', () => {
+      // 2b) REPLCONF capa eof capa psync2  (single command, 5 tokens)
+      master.write(
+        array([
+          bulkString('REPLCONF'),
+          bulkString('capa'),
+          bulkString('eof'),
+          bulkString('capa'),
+          bulkString('psync2'),
+        ])
+      );
+
+      // After OK to capabilities
+      master.once('data', () => {
+        // 3) PSYNC ? -1
+        master.write(
+          array([bulkString('PSYNC'), bulkString('?'), bulkString('-1')])
+        );
+
+        // We can ignore what comes back here for this stage.
+      });
     });
   });
 
-  // Optional: ignore/trace master replies for now
   master.on('error', () => {
-    /* noop for this stage */
+    /* ignore for this stage */
   });
   master.on('close', () => {
-    /* reconnect later if you want */
+    /* optional: reconnect later */
   });
 
   return master;
