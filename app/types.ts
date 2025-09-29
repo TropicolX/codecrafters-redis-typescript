@@ -39,6 +39,7 @@ export interface ServerState {
   masterReplOffset?: number;
   replicaOf?: ReplicaOfConfig;
   replicas?: Set<Socket>;
+  replicaOffset?: number;
 }
 
 export interface ReplicaOfConfig {

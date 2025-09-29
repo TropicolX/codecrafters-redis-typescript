@@ -358,6 +358,23 @@ export function dispatchCommand(
   }
 }
 
+export function encodeArrayRESP(parts: Parts): Buffer {
+  const chunks: Buffer[] = [];
+  // Array header
+  chunks.push(Buffer.from(`*${parts.length}\r\n`, 'ascii'));
+
+  for (const p of parts) {
+    const s = typeof p === 'string' ? p : String(p);
+    // Encode argument in UTF-8, compute byte length precisely
+    const data = Buffer.from(s, 'utf8');
+    chunks.push(Buffer.from(`$${data.length}\r\n`, 'ascii'));
+    chunks.push(data);
+    chunks.push(Buffer.from('\r\n', 'ascii'));
+  }
+
+  return Buffer.concat(chunks as any);
+}
+
 function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
   let phase:
     | 'await_fullresync'
@@ -376,24 +393,37 @@ function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
     processBuffer();
   });
 
-  function handleDecoded(parts: any[]) {
+  function handleDecoded(
+    parts: Parts,
+    rawLen: number,
+    state: ServerState,
+    sock: import('net').Socket
+  ) {
     if (!parts || parts.length === 0) return;
 
     const cmd = String(parts[0]).toUpperCase();
-    if (cmd === 'REPLCONF' && parts.length >= 3) {
-      const sub = String(parts[1]).toUpperCase();
-      if (sub === 'GETACK') {
-        // Reply with: REPLCONF ACK 0 (offset hardcoded to 0 for this stage)
-        const ack = array([
-          bulkString('REPLCONF'),
-          bulkString('ACK'),
-          bulkString('0'),
-        ]);
-        sock.write(ack);
-        return; // don't dispatch this further
-      }
+
+    if (
+      cmd === 'REPLCONF' &&
+      parts.length >= 3 &&
+      String(parts[1]).toUpperCase() === 'GETACK'
+    ) {
+      // Reply with offset BEFORE counting this GETACK
+      const ack = array([
+        bulkString('REPLCONF'),
+        bulkString('ACK'),
+        bulkString(String(state.replicaOffset ?? 0)),
+      ]);
+      sock.write(ack);
+
+      // Now include this GETACK command's bytes in the offset
+      state.replicaOffset = (state.replicaOffset ?? 0) + rawLen;
+      return;
     }
-    // For all other propagated commands: apply state changes silently (no reply)
+
+    // For any other command (e.g., PING, SET, etc.):
+    // Count it first, then apply silently (no reply to master).
+    state.replicaOffset = (state.replicaOffset ?? 0) + rawLen;
     dispatchCommand(sink, parts, state, 'replication');
   }
 
@@ -432,7 +462,10 @@ function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
         // Feed whatever we have into the RESP decoder
         const frames = decoder.push(buf);
         buf = Buffer.alloc(0);
-        for (const parts of frames) handleDecoded(parts);
+        for (const parts of frames) {
+          const raw = encodeArrayRESP(parts); // re-encode *exactly* what we parsed
+          handleDecoded(parts, raw.length, state, sock);
+        }
         return; // nothing else to do until more data arrives
       }
     }
