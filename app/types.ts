@@ -33,13 +33,26 @@ export interface ReplicaOfConfig {
   port: number;
 }
 
+export interface ReplicaLink {
+  socket: Socket;
+  lastAckOffset: number; // updated from REPLCONF ACK <offset>
+}
+
+export interface WaitRequest {
+  socket: Socket; // client waiting on WAIT
+  required: number; // num replicas requested
+  targetOffset: number; // masterReplOffset at time of WAIT
+  timeout: NodeJS.Timeout; // timer to expire this wait
+}
+
 export interface ServerState {
   role: Role;
   masterReplId?: string;
   masterReplOffset?: number;
   replicaOf?: ReplicaOfConfig;
-  replicas?: Set<Socket>;
+  replicas?: Map<Socket, ReplicaLink>;
   replicaOffset?: number;
+  waiters?: Set<WaitRequest>;
 }
 
 export interface ReplicaOfConfig {

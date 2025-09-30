@@ -3,8 +3,10 @@ import {
   array,
   buildXReadResponse,
   bulkString,
+  checkAllWaiters,
   cleanupWaiter,
   cmpId,
+  countAcked,
   encodeArrayOfBulk,
   errorString,
   getFreshString,
@@ -18,8 +20,10 @@ import {
   parseIdRaw,
   parseIdStrict,
   registerWaiter,
+  resolveWaiter,
   resolveXReadStart,
   sendBulkBytes,
+  sendGetAckToAllReplicas,
   serveWaitersForKey,
   simpleString,
   unregisterWaiter,
@@ -33,7 +37,14 @@ import {
   streams,
   waiterBySocket,
 } from './store';
-import type { Parts, ServerState, Waiter, XReadWaiter } from './types';
+import type {
+  Parts,
+  ServerState,
+  Waiter,
+  WaitRequest,
+  XReadWaiter,
+} from './types';
+import { RESPDecoder } from './resp';
 
 export const PING = (socket: Socket, _: Parts) => {
   socket.write(simpleString('PONG'));
@@ -776,27 +787,82 @@ export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
   socket.write(simpleString(`FULLRESYNC ${replId} 0`));
   sendBulkBytes(socket, EMPTY_RDB_BYTES);
 
-  // ---- NEW: register this socket as an active replica link
-  if (!state.replicas) state.replicas = new Set();
-  state.replicas.add(socket);
+  // Register replica link + decoder to receive ACKs
+  const decoder = new RESPDecoder();
+  state.replicas ??= new Map();
+  state.replicas.set(socket, { socket, lastAckOffset: 0 });
 
   const cleanup = () => state.replicas!.delete(socket);
   socket.once('close', cleanup);
   socket.once('end', cleanup);
-  socket.once('error', cleanup as any);
+  socket.on('error', cleanup as any);
+
+  socket.on('data', (chunk: Buffer) => {
+    // Replicas will send REPLCONF ACK <offset> only (plus maybe PING/etc. later)
+    const frames = decoder.push(chunk);
+    for (const frame of frames) {
+      if (!frame?.length) continue;
+      const cmd = String(frame[0]).toUpperCase();
+      if (
+        cmd === 'REPLCONF' &&
+        frame.length >= 3 &&
+        String(frame[1]).toUpperCase() === 'ACK'
+      ) {
+        const off = Number(frame[2]);
+        const rep = state.replicas!.get(socket);
+        if (rep && Number.isFinite(off)) {
+          rep.lastAckOffset = off;
+          checkAllWaiters(state);
+        }
+      }
+      // ignore other frames from replica in this stage
+    }
+  });
 }
 
 export function WAIT(socket: Socket, parts: Parts, state: ServerState) {
-  // Syntax: WAIT <numreplicas> <timeout_ms>
-  // For this stage, we ignore both args and just return the count of connected replicas.
+  // WAIT <numreplicas> <timeout_ms>
   if (parts.length !== 3) {
-    // Real Redis would error; fine to be forgiving, but let's be tidy:
     socket.write(
       errorString("ERR wrong number of arguments for 'wait' command")
     );
     return;
   }
 
-  const count = state.replicas ? state.replicas.size : 0;
-  socket.write(integerReply(count));
+  const requested = Math.max(0, Number(parts[1]));
+  const timeoutMs = Math.max(0, Number(parts[2]));
+  if (!Number.isFinite(requested) || !Number.isFinite(timeoutMs)) {
+    socket.write(errorString('ERR invalid integer'));
+    return;
+  }
+
+  const targetOffset = state.masterReplOffset ?? 0; // wait for ACKs up to "now"
+
+  // If there are no replicas, return 0 immediately
+  const totalReplicas = state.replicas?.size ?? 0;
+  if (totalReplicas === 0 || requested === 0) {
+    socket.write(integerReply(0));
+    return;
+  }
+
+  // Send GETACK to all replicas to prompt fresh ACKs
+  sendGetAckToAllReplicas(state);
+
+  // If we already have enough ACKs, return immediately
+  const current = countAcked(state, targetOffset);
+  if (current >= requested) {
+    socket.write(integerReply(current));
+    return;
+  }
+
+  // Otherwise, park the request with a timeout
+  state.waiters ??= new Set();
+  const waiter: WaitRequest = {
+    socket,
+    required: requested,
+    targetOffset,
+    // @ts-ignore
+    timeout: setTimeout(() => resolveWaiter(state, waiter), timeoutMs),
+  };
+  state.waiters.add(waiter);
 }

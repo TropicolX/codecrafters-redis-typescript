@@ -38,6 +38,8 @@ const PORT = resolvePortFromArgv(process.argv, 6379);
 const state: ServerState = {
   role: replicaOf ? ('slave' as const) : 'master',
   replicaOf,
+  replicas: new Map(),
+  waiters: new Set(),
 };
 
 if (state.role === 'master') {

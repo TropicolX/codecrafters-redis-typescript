@@ -15,6 +15,7 @@ import type {
   ReplicaOfConfig,
   ServerState,
   Parts,
+  WaitRequest,
 } from './types';
 import type { Socket } from 'node:net';
 import { RESPDecoder } from './resp';
@@ -562,22 +563,70 @@ export function encodeCommandForReplication(parts: Parts): string {
   );
 }
 
+export function sendGetAckToAllReplicas(state: ServerState) {
+  if (!state.replicas) return;
+  const payload = array([
+    bulkString('REPLCONF'),
+    bulkString('GETACK'),
+    bulkString('*'),
+  ]);
+  for (const { socket } of state.replicas.values()) {
+    try {
+      socket.write(payload);
+    } catch {}
+  }
+}
+
+export function countAcked(state: ServerState, targetOffset: number): number {
+  if (!state.replicas) return 0;
+  let n = 0;
+  for (const rep of state.replicas.values()) {
+    if ((rep.lastAckOffset ?? 0) >= targetOffset) n++;
+  }
+  return n;
+}
+
+export function resolveWaiter(state: ServerState, waiter: WaitRequest) {
+  try {
+    const cnt = countAcked(state, waiter.targetOffset);
+    waiter.socket.write(integerReply(cnt));
+  } finally {
+    clearTimeout(waiter.timeout);
+    state.waiters?.delete(waiter);
+  }
+}
+
+export function checkAllWaiters(state: ServerState) {
+  if (!state.waiters || state.waiters.size === 0) return;
+  for (const w of Array.from(state.waiters)) {
+    const cnt = countAcked(state, w.targetOffset);
+    if (cnt >= w.required) {
+      resolveWaiter(state, w);
+    }
+  }
+}
+
 export function propagateToReplicas(
   state: ServerState,
   parts: Parts,
   source?: Socket
 ) {
-  if (state.role !== 'master') return; // <- important
+  if (state.role !== 'master') return;
   if (!state.replicas || state.replicas.size === 0) return;
 
   const payload = encodeCommandForReplication(parts);
-  for (const sock of state.replicas) {
-    if (source && sock === source) continue;
+  // Increase the global replication offset by payload byte length
+  state.masterReplOffset =
+    (state.masterReplOffset ?? 0) + Buffer.byteLength(payload);
+
+  for (const { socket } of state.replicas.values()) {
+    if (source && socket === source) continue;
     try {
-      sock.write(payload);
+      socket.write(payload);
     } catch {}
   }
 }
+
 export function isWriteCommand(cmd: string): boolean {
   switch (cmd) {
     case 'SET':
