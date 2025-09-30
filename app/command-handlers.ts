@@ -782,6 +782,7 @@ export function REPLCONF(socket: Socket, parts: Parts, _state: ServerState) {
   // …reply OK as before.
   socket.write(simpleString('OK'));
 }
+
 export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
   if (parts.length < 3) {
     socket.write(
