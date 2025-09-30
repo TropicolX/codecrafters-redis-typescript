@@ -785,3 +785,18 @@ export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
   socket.once('end', cleanup);
   socket.once('error', cleanup as any);
 }
+
+export function WAIT(socket: Socket, parts: Parts, state: ServerState) {
+  // Syntax: WAIT <numreplicas> <timeout_ms>
+  // For this stage, we ignore both args and just return the count of connected replicas.
+  if (parts.length !== 3) {
+    // Real Redis would error; fine to be forgiving, but let's be tidy:
+    socket.write(
+      errorString("ERR wrong number of arguments for 'wait' command")
+    );
+    return;
+  }
+
+  const count = state.replicas ? state.replicas.size : 0;
+  socket.write(integerReply(count));
+}

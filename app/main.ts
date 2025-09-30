@@ -25,6 +25,7 @@ import {
   RPUSH,
   SET,
   TYPE,
+  WAIT,
   XADD,
   XRANGE,
   XREAD,
@@ -141,6 +142,10 @@ const server = net.createServer((socket) => {
 
         case 'INFO':
           INFO(socket, parts, state);
+          break;
+
+        case 'WAIT':
+          WAIT(socket, parts, state);
           break;
 
         default: {
