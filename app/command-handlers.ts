@@ -770,10 +770,18 @@ export function INFO(socket: Socket, parts: Parts, state: ServerState) {
   socket.write(bulkString(lines.join('\r\n')));
 }
 
-export function REPLCONF(socket: Socket, _parts: Parts, _state: ServerState) {
-  socket.write(simpleString('OK')); // -> "+OK\r\n"
+export function REPLCONF(socket: Socket, parts: Parts, _state: ServerState) {
+  const sub = parts[1] ? String(parts[1]).toUpperCase() : '';
+  if (sub === 'ACK') {
+    // Replica telling us its offset — do NOT reply.
+    return;
+  }
+  // For handshake commands like:
+  //   REPLCONF listening-port <PORT>
+  //   REPLCONF capa ...
+  // …reply OK as before.
+  socket.write(simpleString('OK'));
 }
-
 export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
   if (parts.length < 3) {
     socket.write(
