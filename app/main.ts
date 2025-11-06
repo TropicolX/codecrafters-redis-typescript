@@ -157,7 +157,7 @@ const server = net.createServer((socket) => {
 
         default: {
           socket.write(
-            errorString(`ERR unknown command '${String(parts[0])}'`)
+            errorString(`ERR unknown command: '${String(parts[0])}'`)
           );
           break;
         }
