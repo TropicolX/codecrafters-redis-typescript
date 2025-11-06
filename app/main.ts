@@ -1,5 +1,5 @@
-import net from 'node:net';
-import { RESPDecoder } from './resp';
+import net from "node:net";
+import { RESPDecoder } from "./resp";
 import {
   cleanupWaiter,
   errorString,
@@ -8,9 +8,10 @@ import {
   resolvePortFromArgv,
   resolveReplicaOfFromArgv,
   startReplicaLink,
-} from './utils';
-import { waiterBySocket } from './store';
+} from "./utils";
+import { waiterBySocket } from "./store";
 import {
+  ACL,
   BLPOP,
   ECHO,
   GET,
@@ -29,33 +30,33 @@ import {
   XADD,
   XRANGE,
   XREAD,
-} from './command-handlers';
-import type { ServerState } from './types';
+} from "./command-handlers";
+import type { ServerState } from "./types";
 
 const replicaOf = resolveReplicaOfFromArgv(process.argv);
 const PORT = resolvePortFromArgv(process.argv, 6379);
 
 const state: ServerState = {
-  role: replicaOf ? ('slave' as const) : 'master',
+  role: replicaOf ? ("slave" as const) : "master",
   replicaOf,
   replicas: new Map(),
   waiters: new Set(),
 };
 
-if (state.role === 'master') {
+if (state.role === "master") {
   // Hardcode a 40-char ID per stage requirements (any alphanumeric 40 chars is fine)
-  state.masterReplId = '8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb';
+  state.masterReplId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
   state.masterReplOffset = 0;
 }
 
-if (state.role === 'slave' && state.replicaOf) {
+if (state.role === "slave" && state.replicaOf) {
   startReplicaLink(state.replicaOf, PORT, state);
 }
 
 const server = net.createServer((socket) => {
   const decoder = new RESPDecoder();
 
-  socket.on('data', (chunk: Buffer) => {
+  socket.on("data", (chunk: Buffer) => {
     const frames = decoder.push(chunk);
 
     for (const parts of frames) {
@@ -63,91 +64,95 @@ const server = net.createServer((socket) => {
       const cmd = String(parts[0]).toUpperCase();
 
       switch (cmd) {
-        case 'PING': {
+        case "PING": {
           PING(socket, parts);
           break;
         }
 
-        case 'ECHO': {
+        case "ECHO": {
           ECHO(socket, parts);
           break;
         }
 
-        case 'REPLCONF': {
+        case "REPLCONF": {
           REPLCONF(socket, parts, state);
           break;
         }
 
-        case 'PSYNC':
+        case "PSYNC":
           PSYNC(socket, parts, state);
           break;
 
-        case 'SET': {
+        case "SET": {
           SET(socket, parts, state);
           break;
         }
 
-        case 'GET': {
+        case "GET": {
           GET(socket, parts);
           break;
         }
 
-        case 'RPUSH': {
+        case "RPUSH": {
           RPUSH(socket, parts);
           break;
         }
 
-        case 'LRANGE': {
+        case "LRANGE": {
           LRANGE(socket, parts);
           break;
         }
 
-        case 'LPUSH': {
+        case "LPUSH": {
           LPUSH(socket, parts);
           break;
         }
 
-        case 'LLEN': {
+        case "LLEN": {
           LLEN(socket, parts);
           break;
         }
 
-        case 'LPOP': {
+        case "LPOP": {
           LPOP(socket, parts);
           break;
         }
 
-        case 'BLPOP': {
+        case "BLPOP": {
           BLPOP(socket, parts);
           break;
         }
 
-        case 'TYPE': {
+        case "TYPE": {
           TYPE(socket, parts);
           break;
         }
 
-        case 'XADD': {
+        case "XADD": {
           XADD(socket, parts);
           break;
         }
 
-        case 'XRANGE': {
+        case "XRANGE": {
           XRANGE(socket, parts);
           break;
         }
 
-        case 'XREAD': {
+        case "XREAD": {
           XREAD(socket, parts);
           break;
         }
 
-        case 'INFO':
+        case "INFO":
           INFO(socket, parts, state);
           break;
 
-        case 'WAIT':
+        case "WAIT":
           WAIT(socket, parts, state);
+          break;
+
+        case "ACL":
+          ACL(socket, parts, state);
           break;
 
         default: {
@@ -164,15 +169,15 @@ const server = net.createServer((socket) => {
     }
   });
 
-  socket.on('close', () => {
+  socket.on("close", () => {
     const w = waiterBySocket.get(socket);
     if (w) cleanupWaiter(w);
   });
-  socket.on('end', () => {
+  socket.on("end", () => {
     const w = waiterBySocket.get(socket);
     if (w) cleanupWaiter(w);
   });
-  socket.on('error', () => {
+  socket.on("error", () => {
     const w = waiterBySocket.get(socket);
     if (w) cleanupWaiter(w);
   });

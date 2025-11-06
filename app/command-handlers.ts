@@ -1,4 +1,4 @@
-import type { Socket } from 'node:net';
+import type { Socket } from "node:net";
 import {
   array,
   buildXReadResponse,
@@ -27,7 +27,7 @@ import {
   serveWaitersForKey,
   simpleString,
   unregisterWaiter,
-} from './utils';
+} from "./utils";
 import {
   blockedByKey,
   EMPTY_RDB_BYTES,
@@ -36,23 +36,23 @@ import {
   store,
   streams,
   waiterBySocket,
-} from './store';
+} from "./store";
 import type {
   Parts,
   ServerState,
   Waiter,
   WaitRequest,
   XReadWaiter,
-} from './types';
-import { RESPDecoder } from './resp';
+} from "./types";
+import { RESPDecoder } from "./resp";
 
 export const PING = (socket: Socket, _: Parts) => {
-  socket.write(simpleString('PONG'));
+  socket.write(simpleString("PONG"));
 };
 
 export const ECHO = (socket: Socket, parts: Parts) => {
   const arg = parts[1];
-  if (typeof arg !== 'string' || parts.length !== 2) {
+  if (typeof arg !== "string" || parts.length !== 2) {
     socket.write(
       errorString("ERR wrong number of arguments for 'echo' command")
     );
@@ -64,7 +64,7 @@ export const ECHO = (socket: Socket, parts: Parts) => {
 export const SET = (socket: Socket, parts: Parts, state: ServerState) => {
   const key = parts[1];
   const val = parts[2];
-  if (typeof key !== 'string' || typeof val !== 'string') {
+  if (typeof key !== "string" || typeof val !== "string") {
     socket.write(
       errorString("ERR wrong number of arguments for 'set' command")
     );
@@ -78,10 +78,10 @@ export const SET = (socket: Socket, parts: Parts, state: ServerState) => {
   // Accepts: PX <ms> (case-insensitive). Ignore other options in this stage.
   for (let i = 3; i < parts.length; i++) {
     const token = parts[i];
-    if (typeof token === 'string' && token.toUpperCase() === 'PX') {
+    if (typeof token === "string" && token.toUpperCase() === "PX") {
       const msToken = parts[i + 1];
-      if (typeof msToken !== 'string') {
-        socket.write(errorString('ERR syntax error'));
+      if (typeof msToken !== "string") {
+        socket.write(errorString("ERR syntax error"));
         // Do not store; stop processing this command
         expiresAt = undefined;
         return;
@@ -89,7 +89,7 @@ export const SET = (socket: Socket, parts: Parts, state: ServerState) => {
       const ms = Number(msToken);
       if (!Number.isFinite(ms) || !Number.isInteger(ms) || ms < 0) {
         socket.write(
-          errorString('ERR value is not an integer or out of range')
+          errorString("ERR value is not an integer or out of range")
         );
         expiresAt = undefined;
         return;
@@ -102,14 +102,14 @@ export const SET = (socket: Socket, parts: Parts, state: ServerState) => {
   }
 
   // Overwrite key with new value/expiry
-  store.set(key, { type: 'string', value: val, expiresAt });
-  socket.write(simpleString('OK'));
+  store.set(key, { type: "string", value: val, expiresAt });
+  socket.write(simpleString("OK"));
   return;
 };
 
 export const GET = (socket: Socket, parts: Parts) => {
   const key = parts[1];
-  if (typeof key !== 'string' || parts.length !== 2) {
+  if (typeof key !== "string" || parts.length !== 2) {
     socket.write(
       errorString("ERR wrong number of arguments for 'get' command")
     );
@@ -131,9 +131,9 @@ export const RPUSH = (socket: Socket, parts: Parts) => {
 
   // Validate: need at least one element, and all must be strings
   if (
-    typeof key !== 'string' ||
+    typeof key !== "string" ||
     elements.length === 0 ||
-    elements.some((e) => typeof e !== 'string')
+    elements.some((e) => typeof e !== "string")
   ) {
     socket.write(
       errorString("ERR wrong number of arguments for 'rpush' command")
@@ -147,16 +147,16 @@ export const RPUSH = (socket: Socket, parts: Parts) => {
   if (!entry) {
     // Create new list with all elements
     const list = [...asStrings];
-    store.set(key, { type: 'list', value: list });
+    store.set(key, { type: "list", value: list });
     socket.write(integerReply(list.length));
     serveWaitersForKey(key);
     return;
   }
 
-  if (entry.type !== 'list') {
+  if (entry.type !== "list") {
     socket.write(
       errorString(
-        'WRONGTYPE Operation against a key holding the wrong kind of value'
+        "WRONGTYPE Operation against a key holding the wrong kind of value"
       )
     );
     return;
@@ -173,9 +173,9 @@ export const LRANGE = (socket: Socket, parts: Parts) => {
   const startToken = parts[2];
   const stopToken = parts[3];
   if (
-    typeof key !== 'string' ||
-    typeof startToken !== 'string' ||
-    typeof stopToken !== 'string' ||
+    typeof key !== "string" ||
+    typeof startToken !== "string" ||
+    typeof stopToken !== "string" ||
     parts.length !== 4
   ) {
     socket.write(
@@ -191,14 +191,14 @@ export const LRANGE = (socket: Socket, parts: Parts) => {
     Number.isNaN(start) ||
     Number.isNaN(stop)
   ) {
-    socket.write(errorString('ERR value is not an integer or out of range'));
+    socket.write(errorString("ERR value is not an integer or out of range"));
     return;
   }
 
   const entry = store.get(key);
-  if (!entry || entry.type !== 'list' || isExpired(entry)) {
+  if (!entry || entry.type !== "list" || isExpired(entry)) {
     // Missing, wrong type, or expired
-    socket.write('*0\r\n'); // empty list
+    socket.write("*0\r\n"); // empty list
     return;
   }
 
@@ -215,7 +215,7 @@ export const LRANGE = (socket: Socket, parts: Parts) => {
   if (iStop < 0) iStop = -1; // ensures empty if negative after clamp
 
   if (iStart > iStop || iStart >= n || iStop < 0) {
-    socket.write('*0\r\n');
+    socket.write("*0\r\n");
     return;
   }
 
@@ -233,9 +233,9 @@ export const LPUSH = (socket: Socket, parts: Parts) => {
   const elements = parts.slice(2);
 
   if (
-    typeof key !== 'string' ||
+    typeof key !== "string" ||
     elements.length === 0 ||
-    elements.some((e) => typeof e !== 'string')
+    elements.some((e) => typeof e !== "string")
   ) {
     socket.write(
       errorString("ERR wrong number of arguments for 'lpush' command")
@@ -250,15 +250,15 @@ export const LPUSH = (socket: Socket, parts: Parts) => {
   if (!entry) {
     // Create new list: push left one-by-one (so reverse the provided order)
     const list = [...asStrings].reverse();
-    store.set(key, { type: 'list', value: list });
+    store.set(key, { type: "list", value: list });
     socket.write(integerReply(list.length));
     return;
   }
 
-  if (entry.type !== 'list') {
+  if (entry.type !== "list") {
     socket.write(
       errorString(
-        'WRONGTYPE Operation against a key holding the wrong kind of value'
+        "WRONGTYPE Operation against a key holding the wrong kind of value"
       )
     );
     return;
@@ -272,7 +272,7 @@ export const LPUSH = (socket: Socket, parts: Parts) => {
 
 export const LLEN = (socket: Socket, parts: Parts) => {
   const key = parts[1];
-  if (typeof key !== 'string' || parts.length !== 2) {
+  if (typeof key !== "string" || parts.length !== 2) {
     socket.write(
       errorString("ERR wrong number of arguments for 'llen' command")
     );
@@ -280,7 +280,7 @@ export const LLEN = (socket: Socket, parts: Parts) => {
   }
 
   const entry = store.get(key);
-  if (!entry || entry.type !== 'list' || isExpired(entry)) {
+  if (!entry || entry.type !== "list" || isExpired(entry)) {
     // Missing, wrong type, or expired
     socket.write(integerReply(0));
     return;
@@ -294,7 +294,7 @@ export const LPOP = (socket: Socket, parts: Parts) => {
   const countToken = parts[2]; // optional
 
   // Validate args
-  if (typeof key !== 'string' || parts.length < 2 || parts.length > 3) {
+  if (typeof key !== "string" || parts.length < 2 || parts.length > 3) {
     socket.write(
       errorString("ERR wrong number of arguments for 'lpop' command")
     );
@@ -304,13 +304,13 @@ export const LPOP = (socket: Socket, parts: Parts) => {
   // Resolve entry
   const entry = store.get(key);
   // Treat missing / non-list / expired as empty
-  const missing = !entry || entry.type !== 'list' || isExpired(entry);
-  const hasCount = typeof countToken === 'string';
+  const missing = !entry || entry.type !== "list" || isExpired(entry);
+  const hasCount = typeof countToken === "string";
 
   if (missing) {
     if (hasCount) {
       // With count, return empty array
-      socket.write('*0\r\n');
+      socket.write("*0\r\n");
     } else {
       // Without count, return null bulk string
       socket.write(NULL_BULK);
@@ -336,7 +336,7 @@ export const LPOP = (socket: Socket, parts: Parts) => {
   // Validate count: positive integer
   const count = Number(countToken);
   if (!Number.isInteger(count) || count <= 0) {
-    socket.write(errorString('ERR value is not an integer or out of range'));
+    socket.write(errorString("ERR value is not an integer or out of range"));
     return;
   }
 
@@ -361,13 +361,13 @@ export const BLPOP = (socket: Socket, parts: Parts) => {
 
   // Last arg is timeout (seconds)
   const timeoutToken = parts[parts.length - 1];
-  if (typeof timeoutToken !== 'string') {
-    socket.write(errorString('ERR syntax error'));
+  if (typeof timeoutToken !== "string") {
+    socket.write(errorString("ERR syntax error"));
     return;
   }
   const timeoutSec = Number(timeoutToken);
   if (!Number.isFinite(timeoutSec) || timeoutSec < 0) {
-    socket.write(errorString('ERR timeout is not a non-negative number'));
+    socket.write(errorString("ERR timeout is not a non-negative number"));
     return;
   }
 
@@ -375,8 +375,8 @@ export const BLPOP = (socket: Socket, parts: Parts) => {
   const keyTokens = parts.slice(1, parts.length - 1);
   const keys: string[] = [];
   for (const t of keyTokens) {
-    if (typeof t !== 'string') {
-      socket.write(errorString('ERR syntax error'));
+    if (typeof t !== "string") {
+      socket.write(errorString("ERR syntax error"));
       return;
     }
     keys.push(t);
@@ -387,7 +387,7 @@ export const BLPOP = (socket: Socket, parts: Parts) => {
   let poppedVal: string | null = null;
   for (const k of keys) {
     const e = store.get(k);
-    if (e && e.type === 'list' && e.value.length > 0) {
+    if (e && e.type === "list" && e.value.length > 0) {
       poppedKey = k;
       poppedVal = e.value.shift() as string;
       if (e.value.length === 0) store.delete(k);
@@ -431,7 +431,7 @@ export const BLPOP = (socket: Socket, parts: Parts) => {
 };
 
 export const TYPE = (socket: Socket, parts: Parts) => {
-  if (parts.length !== 2 || typeof parts[1] !== 'string') {
+  if (parts.length !== 2 || typeof parts[1] !== "string") {
     socket.write(
       errorString("ERR wrong number of arguments for 'type' command")
     );
@@ -439,17 +439,17 @@ export const TYPE = (socket: Socket, parts: Parts) => {
   }
   const key = parts[1] as string;
 
-  if (streams.has(key)) socket.write(simpleString('stream'));
-  else if (store.has(key)) socket.write(simpleString('string'));
-  else socket.write(simpleString('none'));
+  if (streams.has(key)) socket.write(simpleString("stream"));
+  else if (store.has(key)) socket.write(simpleString("string"));
+  else socket.write(simpleString("none"));
 };
 
 export const XADD = (socket: Socket, parts: Parts) => {
   // XADD <key> <id> field value [field value ...]
   if (
     parts.length < 5 ||
-    typeof parts[1] !== 'string' ||
-    typeof parts[2] !== 'string'
+    typeof parts[1] !== "string" ||
+    typeof parts[2] !== "string"
   ) {
     socket.write(
       errorString("ERR wrong number of arguments for 'xadd' command")
@@ -462,7 +462,7 @@ export const XADD = (socket: Socket, parts: Parts) => {
 
   // Ensure even number of field/value args
   if ((parts.length - 3) % 2 !== 0) {
-    socket.write(errorString('ERR Unbalanced key/value pairs'));
+    socket.write(errorString("ERR Unbalanced key/value pairs"));
     return;
   }
 
@@ -470,7 +470,7 @@ export const XADD = (socket: Socket, parts: Parts) => {
   if (store?.has?.(key) && !streams.has(key)) {
     socket.write(
       errorString(
-        'WRONGTYPE Operation against a key holding the wrong kind of value'
+        "WRONGTYPE Operation against a key holding the wrong kind of value"
       )
     );
     return;
@@ -482,7 +482,7 @@ export const XADD = (socket: Socket, parts: Parts) => {
 
   let finalId: string;
 
-  if (idRaw === '*') {
+  if (idRaw === "*") {
     // -------- Auto-generate ms & seq --------
     const now = nowMsBigInt();
 
@@ -506,9 +506,9 @@ export const XADD = (socket: Socket, parts: Parts) => {
         ).toString()}`;
       }
     }
-  } else if (idRaw.includes('-') && idRaw.endsWith('*')) {
+  } else if (idRaw.includes("-") && idRaw.endsWith("*")) {
     // -------- ms-* branch from previous stage (kept as-is) --------
-    const [msStr] = idRaw.split('-', 2);
+    const [msStr] = idRaw.split("-", 2);
     const ms = BigInt(msStr);
 
     if (stream.entries.length > 0) {
@@ -518,7 +518,7 @@ export const XADD = (socket: Socket, parts: Parts) => {
       if (ms < lastParsed.ms) {
         socket.write(
           errorString(
-            'ERR The ID specified in XADD is equal or smaller than the target stream top item'
+            "ERR The ID specified in XADD is equal or smaller than the target stream top item"
           )
         );
         return;
@@ -541,13 +541,13 @@ export const XADD = (socket: Socket, parts: Parts) => {
     try {
       parsed = parseIdStrict(idRaw);
     } catch {
-      socket.write(errorString('ERR The ID specified in XADD is not valid'));
+      socket.write(errorString("ERR The ID specified in XADD is not valid"));
       return;
     }
 
     if (parsed.ms === 0n && parsed.seq === 0n) {
       socket.write(
-        errorString('ERR The ID specified in XADD must be greater than 0-0')
+        errorString("ERR The ID specified in XADD must be greater than 0-0")
       );
       return;
     }
@@ -559,7 +559,7 @@ export const XADD = (socket: Socket, parts: Parts) => {
       if (parsed.ms < lastParsed.ms || cmpId(parsed, lastParsed) <= 0) {
         socket.write(
           errorString(
-            'ERR The ID specified in XADD is equal or smaller than the target stream top item'
+            "ERR The ID specified in XADD is equal or smaller than the target stream top item"
           )
         );
         return;
@@ -588,9 +588,9 @@ export const XRANGE = (socket: Socket, parts: Parts) => {
   // XRANGE <key> <start> <end>
   if (
     parts.length !== 4 ||
-    typeof parts[1] !== 'string' ||
-    typeof parts[2] !== 'string' ||
-    typeof parts[3] !== 'string'
+    typeof parts[1] !== "string" ||
+    typeof parts[2] !== "string" ||
+    typeof parts[3] !== "string"
   ) {
     socket.write(
       errorString("ERR wrong number of arguments for 'xrange' command")
@@ -606,7 +606,7 @@ export const XRANGE = (socket: Socket, parts: Parts) => {
   if (store?.has?.(key) && !streams.has(key)) {
     socket.write(
       errorString(
-        'WRONGTYPE Operation against a key holding the wrong kind of value'
+        "WRONGTYPE Operation against a key holding the wrong kind of value"
       )
     );
     return;
@@ -652,14 +652,14 @@ export const XREAD = (socket: Socket, parts: Parts) => {
   let blockMs: number | null = null;
 
   // Optional BLOCK <ms>
-  if (String(parts[idx]).toUpperCase() === 'BLOCK') {
+  if (String(parts[idx]).toUpperCase() === "BLOCK") {
     if (parts.length < idx + 2) {
-      socket.write(errorString('ERR syntax error'));
+      socket.write(errorString("ERR syntax error"));
       return;
     }
     const msNum = Number(parts[idx + 1]);
     if (!Number.isFinite(msNum) || msNum < 0) {
-      socket.write(errorString('ERR value is not an integer or out of range'));
+      socket.write(errorString("ERR value is not an integer or out of range"));
       return;
     }
     blockMs = msNum;
@@ -667,8 +667,8 @@ export const XREAD = (socket: Socket, parts: Parts) => {
   }
 
   // STREAMS
-  if (String(parts[idx]).toUpperCase() !== 'STREAMS') {
-    socket.write(errorString('ERR syntax error'));
+  if (String(parts[idx]).toUpperCase() !== "STREAMS") {
+    socket.write(errorString("ERR syntax error"));
     return;
   }
   idx += 1;
@@ -689,7 +689,7 @@ export const XREAD = (socket: Socket, parts: Parts) => {
     if (store?.has?.(k) && !streams.has(k)) {
       socket.write(
         errorString(
-          'WRONGTYPE Operation against a key holding the wrong kind of value'
+          "WRONGTYPE Operation against a key holding the wrong kind of value"
         )
       );
       return;
@@ -736,9 +736,9 @@ export const XREAD = (socket: Socket, parts: Parts) => {
 
   // Cleanup if client disconnects
   const onClose = () => unregisterWaiter(waiter);
-  socket.once('close', onClose);
-  socket.once('end', onClose);
-  socket.once('error', onClose as any);
+  socket.once("close", onClose);
+  socket.once("end", onClose);
+  socket.once("error", onClose as any);
 
   // Park the waiter (no timer means BLOCK 0 -> wait forever)
   registerWaiter(waiter);
@@ -747,9 +747,9 @@ export const XREAD = (socket: Socket, parts: Parts) => {
 
 export function INFO(socket: Socket, parts: Parts, state: ServerState) {
   // Stage guarantees "INFO replication", so we can accept that and ignore others
-  if (parts.length >= 2 && String(parts[1]).toLowerCase() !== 'replication') {
+  if (parts.length >= 2 && String(parts[1]).toLowerCase() !== "replication") {
     socket.write(
-      errorString('ERR only replication section is supported in this stage')
+      errorString("ERR only replication section is supported in this stage")
     );
     return;
   }
@@ -767,12 +767,12 @@ export function INFO(socket: Socket, parts: Parts, state: ServerState) {
   }
 
   // Join lines with CRLF inside the bulk string (no trailing CRLF needed)
-  socket.write(bulkString(lines.join('\r\n')));
+  socket.write(bulkString(lines.join("\r\n")));
 }
 
 export function REPLCONF(socket: Socket, parts: Parts, _state: ServerState) {
-  const sub = parts[1] ? String(parts[1]).toUpperCase() : '';
-  if (sub === 'ACK') {
+  const sub = parts[1] ? String(parts[1]).toUpperCase() : "";
+  if (sub === "ACK") {
     // Replica telling us its offset — do NOT reply.
     return;
   }
@@ -780,7 +780,7 @@ export function REPLCONF(socket: Socket, parts: Parts, _state: ServerState) {
   //   REPLCONF listening-port <PORT>
   //   REPLCONF capa ...
   // …reply OK as before.
-  socket.write(simpleString('OK'));
+  socket.write(simpleString("OK"));
 }
 
 export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
@@ -792,7 +792,7 @@ export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
   }
 
   const replId =
-    state.masterReplId ?? '8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb';
+    state.masterReplId ?? "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
   socket.write(simpleString(`FULLRESYNC ${replId} 0`));
   sendBulkBytes(socket, EMPTY_RDB_BYTES);
 
@@ -802,20 +802,20 @@ export function PSYNC(socket: Socket, parts: Parts, state: ServerState) {
   state.replicas.set(socket, { socket, lastAckOffset: 0 });
 
   const cleanup = () => state.replicas!.delete(socket);
-  socket.once('close', cleanup);
-  socket.once('end', cleanup);
-  socket.on('error', cleanup as any);
+  socket.once("close", cleanup);
+  socket.once("end", cleanup);
+  socket.on("error", cleanup as any);
 
-  socket.on('data', (chunk: Buffer) => {
+  socket.on("data", (chunk: Buffer) => {
     // Replicas will send REPLCONF ACK <offset> only (plus maybe PING/etc. later)
     const frames = decoder.push(chunk);
     for (const frame of frames) {
       if (!frame?.length) continue;
       const cmd = String(frame[0]).toUpperCase();
       if (
-        cmd === 'REPLCONF' &&
+        cmd === "REPLCONF" &&
         frame.length >= 3 &&
-        String(frame[1]).toUpperCase() === 'ACK'
+        String(frame[1]).toUpperCase() === "ACK"
       ) {
         const off = Number(frame[2]);
         const rep = state.replicas!.get(socket);
@@ -841,7 +841,7 @@ export function WAIT(socket: Socket, parts: Parts, state: ServerState) {
   const requested = Math.max(0, Number(parts[1]));
   const timeoutMs = Math.max(0, Number(parts[2]));
   if (!Number.isFinite(requested) || !Number.isFinite(timeoutMs)) {
-    socket.write(errorString('ERR invalid integer'));
+    socket.write(errorString("ERR invalid integer"));
     return;
   }
 
@@ -874,4 +874,20 @@ export function WAIT(socket: Socket, parts: Parts, state: ServerState) {
     timeout: setTimeout(() => resolveWaiter(state, waiter), timeoutMs),
   };
   state.waiters.add(waiter);
+}
+
+export function ACL(socket: Socket, parts: Parts, _state: ServerState) {
+  // Expect: ["ACL", "WHOAMI"]
+  const sub = parts[1] ? String(parts[1]).toUpperCase() : "";
+
+  if (sub === "WHOAMI") {
+    // For this stage we can hardcode "default"
+    socket.write(bulkString("default")); // -> $7\r\ndefault\r\n
+    return;
+  }
+
+  // Not required for this stage, but a tidy response for unknown subcommands
+  socket.write(
+    errorString("ERR unknown subcommand or wrong number of arguments for 'ACL'")
+  );
 }
