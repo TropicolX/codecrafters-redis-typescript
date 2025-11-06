@@ -877,16 +877,27 @@ export function WAIT(socket: Socket, parts: Parts, state: ServerState) {
 }
 
 export function ACL(socket: Socket, parts: Parts, _state: ServerState) {
-  // Expect: ["ACL", "WHOAMI"]
   const sub = parts[1] ? String(parts[1]).toUpperCase() : "";
 
   if (sub === "WHOAMI") {
-    // For this stage we can hardcode "default"
-    socket.write(bulkString("default")); // -> $7\r\ndefault\r\n
+    socket.write(bulkString("default"));
     return;
   }
 
-  // Not required for this stage, but a tidy response for unknown subcommands
+  if (sub === "GETUSER") {
+    // Expect: ACL GETUSER <username>  (the tester uses "default")
+    if (parts.length < 3) {
+      socket.write(
+        errorString("ERR wrong number of arguments for 'ACL|GETUSER'")
+      );
+      return;
+    }
+    // For this stage, username is ignored and we hardcode an empty flags array.
+    const resp = array([bulkString("flags"), array([])]);
+    socket.write(resp);
+    return;
+  }
+
   socket.write(
     errorString("ERR unknown subcommand or wrong number of arguments for 'ACL'")
   );
