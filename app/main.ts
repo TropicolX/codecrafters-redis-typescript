@@ -12,6 +12,7 @@ import {
 import { waiterBySocket } from "./store";
 import {
   ACL,
+  AUTH,
   BLPOP,
   ECHO,
   GET,
@@ -155,6 +156,10 @@ const server = net.createServer((socket) => {
 
         case "WAIT":
           WAIT(socket, parts, state);
+          break;
+
+        case "AUTH":
+          AUTH(socket, parts, state);
           break;
 
         case "ACL":

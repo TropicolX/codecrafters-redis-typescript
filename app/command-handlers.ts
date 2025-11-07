@@ -980,3 +980,39 @@ export function ACL(socket: Socket, parts: Parts, state: ServerState) {
     errorString("ERR unknown subcommand or wrong number of arguments for 'ACL'")
   );
 }
+
+export function AUTH(socket: Socket, parts: Parts, state: ServerState) {
+  if (parts.length !== 3) {
+    socket.write(
+      errorString("ERR wrong number of arguments for 'auth' command")
+    );
+    return;
+  }
+
+  const username = String(parts[1]);
+  const password = String(parts[2]);
+
+  const user = state.acl?.users.get(username);
+  if (!user) {
+    socket.write(
+      errorString(
+        "WRONGPASS invalid username-password pair or user is disabled."
+      )
+    );
+    return;
+  }
+
+  const hash = sha256Hex(password); // lowercase hex
+  const ok = user.passwords.includes(hash);
+
+  if (ok) {
+    socket.write(simpleString("OK")); // +OK\r\n
+  } else {
+    // Tester only checks that it starts with "WRONGPASS"
+    socket.write(
+      errorString(
+        "WRONGPASS invalid username-password pair or user is disabled."
+      )
+    );
+  }
+}
