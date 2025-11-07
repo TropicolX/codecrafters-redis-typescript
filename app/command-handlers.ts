@@ -893,8 +893,13 @@ export function ACL(socket: Socket, parts: Parts, _state: ServerState) {
       return;
     }
 
-    // For this stage, always return: ["flags", ["nopass"]]
-    const resp = array([bulkString("flags"), array([bulkString("nopass")])]);
+    // RESP: ["flags", ["nopass"], "passwords", []]
+    const resp = array([
+      bulkString("flags"),
+      array([bulkString("nopass")]),
+      bulkString("passwords"),
+      array([]), // empty array
+    ]);
     socket.write(resp);
     return;
   }
