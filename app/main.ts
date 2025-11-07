@@ -48,6 +48,7 @@ const state: ServerState = {
   replicas: new Map(),
   waiters: new Set(),
   acl: { users: new Map([["default", defaultUser]]) },
+  connections: new Map(),
 };
 
 if (state.role === "master") {
@@ -61,6 +62,21 @@ if (state.role === "slave" && state.replicaOf) {
 }
 
 const server = net.createServer((socket) => {
+  const def = state.acl.users.get("default");
+  const autoUser = def && def.flags.has("nopass") ? "default" : null;
+  state.connections.set(socket, { username: autoUser });
+
+  // Cleanup on close
+  const cleanup = () => {
+    state.connections.delete(socket);
+    const w = waiterBySocket.get(socket);
+    if (w) cleanupWaiter(w);
+  };
+
+  socket.on("close", cleanup);
+  socket.on("end", cleanup);
+  socket.on("error", cleanup);
+
   const decoder = new RESPDecoder();
 
   socket.on("data", (chunk: Buffer) => {
@@ -178,19 +194,6 @@ const server = net.createServer((socket) => {
         propagateToReplicas(state, parts, socket);
       }
     }
-  });
-
-  socket.on("close", () => {
-    const w = waiterBySocket.get(socket);
-    if (w) cleanupWaiter(w);
-  });
-  socket.on("end", () => {
-    const w = waiterBySocket.get(socket);
-    if (w) cleanupWaiter(w);
-  });
-  socket.on("error", () => {
-    const w = waiterBySocket.get(socket);
-    if (w) cleanupWaiter(w);
   });
 });
 

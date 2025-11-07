@@ -50,6 +50,10 @@ export interface WaitRequest {
   timeout: NodeJS.Timeout; // timer to expire this wait
 }
 
+export interface ConnAuth {
+  username: string | null; // null means unauthenticated
+}
+
 export interface ServerState {
   role: Role;
   masterReplId?: string;
@@ -59,8 +63,9 @@ export interface ServerState {
   replicaOffset?: number;
   waiters?: Set<WaitRequest>;
   acl: {
-    users: Map<string, AclUser>;
+    users: Map<string, { flags: Set<string>; passwords: string[] }>;
   };
+  connections: Map<Socket, ConnAuth>;
 }
 
 export interface ReplicaOfConfig {

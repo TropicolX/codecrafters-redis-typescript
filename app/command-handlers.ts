@@ -11,6 +11,7 @@ import {
   errorString,
   getFreshString,
   integerReply,
+  isAuthed,
   isExpired,
   normalizeEnd,
   normalizeStart,
@@ -25,6 +26,7 @@ import {
   sendBulkBytes,
   sendGetAckToAllReplicas,
   serveWaitersForKey,
+  setAuthed,
   sha256Hex,
   simpleString,
   unregisterWaiter,
@@ -880,14 +882,20 @@ export function WAIT(socket: Socket, parts: Parts, state: ServerState) {
 export function ACL(socket: Socket, parts: Parts, state: ServerState) {
   const sub = parts[1] ? String(parts[1]).toUpperCase() : "";
 
-  // ACL WHOAMI
   if (sub === "WHOAMI") {
-    socket.write(bulkString("default"));
+    if (!isAuthed(state, socket)) {
+      socket.write(errorString("NOAUTH Authentication required."));
+      return;
+    }
+    // If authed, return the username; for this stage default is enough
+    const conn = state.connections.get(socket);
+    const name = conn?.username ?? "default";
+    socket.write(bulkString(name));
     return;
   }
 
-  // ACL GETUSER <username>
   if (sub === "GETUSER") {
+    // unchanged from previous stage: return flags/passwords for requested user
     if (parts.length < 3) {
       socket.write(
         errorString("ERR wrong number of arguments for 'ACL|GETUSER'")
@@ -896,34 +904,16 @@ export function ACL(socket: Socket, parts: Parts, state: ServerState) {
     }
     const username = String(parts[2]);
     const user = state.acl.users.get(username);
-    if (!user) {
-      // Real Redis returns (nil). For this stage, an empty user is fine or error out.
-      // We'll mimic Redis-ish behavior with an empty flags/passwords:
-      const resp = array([
-        bulkString("flags"),
-        array([]),
-        bulkString("passwords"),
-        array([]),
-      ]);
-      socket.write(resp);
-      return;
-    }
-
-    // Build: ["flags", [...flags], "passwords", [...hashes]]
-    const flagsArr = Array.from(user.flags);
-    const passwordsArr = user.passwords;
-
     const resp = array([
       bulkString("flags"),
-      array(flagsArr.map((f) => bulkString(f))),
+      array(Array.from(user?.flags ?? []).map((f) => bulkString(f))),
       bulkString("passwords"),
-      array(passwordsArr.map((h) => bulkString(h))),
+      array((user?.passwords ?? []).map((h) => bulkString(h))),
     ]);
     socket.write(resp);
     return;
   }
 
-  // ACL SETUSER <username> >password [>password2 ...]   (stage: just support >plain)
   if (sub === "SETUSER") {
     if (parts.length < 4) {
       socket.write(
@@ -988,11 +978,10 @@ export function AUTH(socket: Socket, parts: Parts, state: ServerState) {
     );
     return;
   }
-
   const username = String(parts[1]);
   const password = String(parts[2]);
 
-  const user = state.acl?.users.get(username);
+  const user = state.acl.users.get(username);
   if (!user) {
     socket.write(
       errorString(
@@ -1001,18 +990,16 @@ export function AUTH(socket: Socket, parts: Parts, state: ServerState) {
     );
     return;
   }
-
-  const hash = sha256Hex(password); // lowercase hex
-  const ok = user.passwords.includes(hash);
-
-  if (ok) {
-    socket.write(simpleString("OK")); // +OK\r\n
-  } else {
-    // Tester only checks that it starts with "WRONGPASS"
+  const ok = user.passwords.includes(sha256Hex(password));
+  if (!ok) {
     socket.write(
       errorString(
         "WRONGPASS invalid username-password pair or user is disabled."
       )
     );
+    return;
   }
+
+  setAuthed(state, socket, username);
+  socket.write(simpleString("OK"));
 }

@@ -650,3 +650,17 @@ export function blackholeSocket(): Socket {
 export function sha256Hex(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex"); // lowercase hex
 }
+
+export function isAuthed(state: ServerState, socket: Socket): boolean {
+  const c = state.connections.get(socket);
+  return Boolean(c && c.username);
+}
+
+export function setAuthed(
+  state: ServerState,
+  socket: Socket,
+  username: string
+) {
+  const c = state.connections.get(socket);
+  if (c) c.username = username;
+}
