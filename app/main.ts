@@ -31,16 +31,22 @@ import {
   XRANGE,
   XREAD,
 } from "./command-handlers";
-import type { ServerState } from "./types";
+import type { AclUser, ServerState } from "./types";
 
 const replicaOf = resolveReplicaOfFromArgv(process.argv);
 const PORT = resolvePortFromArgv(process.argv, 6379);
+
+const defaultUser: AclUser = {
+  flags: new Set(["nopass"]), // default starts with nopass
+  passwords: [], // no stored passwords
+};
 
 const state: ServerState = {
   role: replicaOf ? ("slave" as const) : "master",
   replicaOf,
   replicas: new Map(),
   waiters: new Set(),
+  acl: { users: new Map([["default", defaultUser]]) },
 };
 
 if (state.role === "master") {

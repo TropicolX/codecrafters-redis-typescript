@@ -1,4 +1,4 @@
-import net from 'net';
+import net from "net";
 import {
   blockedByKey,
   MAX_SEQ,
@@ -6,7 +6,7 @@ import {
   streams,
   waiterBySocket,
   waitersByKey,
-} from './store';
+} from "./store";
 import type {
   Entry,
   Waiter,
@@ -16,10 +16,11 @@ import type {
   ServerState,
   Parts,
   WaitRequest,
-} from './types';
-import type { Socket } from 'node:net';
-import { RESPDecoder } from './resp';
-import { GET, INFO, PSYNC, REPLCONF, SET } from './command-handlers';
+} from "./types";
+import type { Socket } from "node:net";
+import { RESPDecoder } from "./resp";
+import { GET, INFO, PSYNC, REPLCONF, SET } from "./command-handlers";
+import { createHash } from "node:crypto";
 
 // Time helpers
 export const nowMs = () => Date.now();
@@ -45,7 +46,7 @@ export function integerReply(n: number): string {
 // Get string value if present and not expired; lazily delete when expired
 export function getFreshString(key: string): string | undefined {
   const e = store.get(key);
-  if (!e || e.type !== 'string') return undefined;
+  if (!e || e.type !== "string") return undefined;
   if (isExpired(e)) {
     store.delete(key); // optional cleanup
     return undefined;
@@ -78,7 +79,7 @@ export function cleanupWaiter(w: Waiter) {
 
 export function serveWaitersForKey(key: string) {
   const entry = store.get(key);
-  if (!entry || entry.type !== 'list') return;
+  if (!entry || entry.type !== "list") return;
 
   // As long as we have elements and waiters, serve oldest first (FIFO)
   let q = blockedByKey.get(key);
@@ -100,7 +101,7 @@ export function serveWaitersForKey(key: string) {
 }
 
 export function parseIdRaw(id: string): { ms: bigint; seq: bigint } {
-  const [msStr, seqStr] = id.split('-', 2);
+  const [msStr, seqStr] = id.split("-", 2);
   const ms = BigInt(msStr);
   const seq = seqStr != null ? BigInt(seqStr) : 0n;
   return { ms, seq };
@@ -108,19 +109,19 @@ export function parseIdRaw(id: string): { ms: bigint; seq: bigint } {
 
 export function normalizeStart(id: string): ParsedId {
   // "123" -> 123-0 ; "123-4" stays
-  const [msStr, seqStr] = id.split('-', 2);
+  const [msStr, seqStr] = id.split("-", 2);
   return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : 0n };
 }
 
 export function normalizeEnd(id: string): ParsedId {
   // "123" -> 123-MAX ; "123-4" stays
-  const [msStr, seqStr] = id.split('-', 2);
+  const [msStr, seqStr] = id.split("-", 2);
   return { ms: BigInt(msStr), seq: seqStr != null ? BigInt(seqStr) : MAX_SEQ };
 }
 
 export function array(items: string[]): string {
   // items are already RESP-encoded chunks (bulk strings, nested arrays, etc.)
-  return `*${items.length}\r\n${items.join('')}`;
+  return `*${items.length}\r\n${items.join("")}`;
 }
 
 export function cmpId(a: ParsedId, b: ParsedId): number {
@@ -133,8 +134,8 @@ export function cmpId(a: ParsedId, b: ParsedId): number {
 
 export function parseIdStrict(id: string): ParsedId {
   // explicit IDs only in this stage: "<ms>-<seq>"
-  const [msStr, seqStr] = id.split('-', 2);
-  if (!msStr || !seqStr) throw new Error('bad-id');
+  const [msStr, seqStr] = id.split("-", 2);
+  if (!msStr || !seqStr) throw new Error("bad-id");
   const ms = BigInt(msStr);
   const seq = BigInt(seqStr);
   return { ms, seq };
@@ -215,7 +216,7 @@ export function notifyXAddAppend(key: string) {
 }
 
 export function resolveXReadStart(idRaw: string, key: string): ParsedId {
-  if (idRaw !== '$') return parseIdRaw(idRaw); // your existing parser
+  if (idRaw !== "$") return parseIdRaw(idRaw); // your existing parser
 
   const s = streams.get(key);
   if (s && s.entries.length > 0) {
@@ -232,13 +233,13 @@ export function resolvePortFromArgv(argv: string[], fallback = 6379): number {
 
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--port' || arg === '-p') {
+    if (arg === "--port" || arg === "-p") {
       const next = argv[i + 1];
       port = Number(next);
       break;
     }
-    if (arg.startsWith('--port=')) {
-      port = Number(arg.split('=')[1]);
+    if (arg.startsWith("--port=")) {
+      port = Number(arg.split("=")[1]);
       break;
     }
   }
@@ -249,7 +250,7 @@ export function resolvePortFromArgv(argv: string[], fallback = 6379): number {
 
 // utils.ts
 function stripQuotes(s: string) {
-  return s.replace(/^["']|["']$/g, '');
+  return s.replace(/^["']|["']$/g, "");
 }
 
 function parseHostPort(one: string, two?: string) {
@@ -263,12 +264,12 @@ function parseHostPort(one: string, two?: string) {
   }
   // single token that may contain space or colon
   const val = first;
-  let host = '';
-  let portStr = '';
-  if (val.includes(' ')) {
+  let host = "";
+  let portStr = "";
+  if (val.includes(" ")) {
     [host, portStr] = val.split(/\s+/, 2);
-  } else if (val.includes(':')) {
-    [host, portStr] = val.split(':', 2);
+  } else if (val.includes(":")) {
+    [host, portStr] = val.split(":", 2);
   } else {
     return undefined;
   }
@@ -283,12 +284,12 @@ export function resolveReplicaOfFromArgv(argv: string[]) {
     const arg = argv[i];
 
     // --replicaof=...
-    if (arg.startsWith('--replicaof=')) {
-      const v = arg.slice('--replicaof='.length);
+    if (arg.startsWith("--replicaof=")) {
+      const v = arg.slice("--replicaof=".length);
       return parseHostPort(v);
     }
 
-    if (arg === '--replicaof') {
+    if (arg === "--replicaof") {
       const next = argv[i + 1];
       const next2 = argv[i + 2];
 
@@ -313,42 +314,42 @@ export function dispatchCommand(
   socket: Socket,
   parts: Parts,
   state: ServerState,
-  source: 'client' | 'replication' = 'client'
+  source: "client" | "replication" = "client"
 ) {
   if (!parts || parts.length === 0) return;
 
   const cmd = String(parts[0]).toUpperCase();
   switch (cmd) {
-    case 'PING' /* your existing PING inline or handler */:
+    case "PING" /* your existing PING inline or handler */:
       // If source === 'replication', master will never send us PING after sync in this challenge,
       // but blackhole socket would swallow replies anyway.
       // socket.write(simpleString('PONG'));
       break;
 
-    case 'INFO':
+    case "INFO":
       INFO(socket, parts, state);
       break;
-    case 'REPLCONF':
+    case "REPLCONF":
       REPLCONF(socket, parts, state);
       break;
-    case 'PSYNC':
+    case "PSYNC":
       PSYNC(socket, parts, state);
       break;
 
     // Writes
-    case 'SET':
+    case "SET":
       SET(socket, parts, state);
       break;
-    case 'DEL':
+    case "DEL":
       // DEL?.(socket, parts, state);
       break;
-    case 'XADD':
+    case "XADD":
       // XADD?.(socket, parts, state);
       break;
     // ... add other commands you support
 
     // Reads
-    case 'GET':
+    case "GET":
       GET(socket, parts);
       break;
     // ...
@@ -362,15 +363,15 @@ export function dispatchCommand(
 export function encodeArrayRESP(parts: Parts): Buffer {
   const chunks: Buffer[] = [];
   // Array header
-  chunks.push(Buffer.from(`*${parts.length}\r\n`, 'ascii'));
+  chunks.push(Buffer.from(`*${parts.length}\r\n`, "ascii"));
 
   for (const p of parts) {
-    const s = typeof p === 'string' ? p : String(p);
+    const s = typeof p === "string" ? p : String(p);
     // Encode argument in UTF-8, compute byte length precisely
-    const data = Buffer.from(s, 'utf8');
-    chunks.push(Buffer.from(`$${data.length}\r\n`, 'ascii'));
+    const data = Buffer.from(s, "utf8");
+    chunks.push(Buffer.from(`$${data.length}\r\n`, "ascii"));
     chunks.push(data);
-    chunks.push(Buffer.from('\r\n', 'ascii'));
+    chunks.push(Buffer.from("\r\n", "ascii"));
   }
 
   return Buffer.concat(chunks as any);
@@ -378,10 +379,10 @@ export function encodeArrayRESP(parts: Parts): Buffer {
 
 function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
   let phase:
-    | 'await_fullresync'
-    | 'await_rdb_header'
-    | 'await_rdb_body'
-    | 'stream_cmds' = 'await_fullresync';
+    | "await_fullresync"
+    | "await_rdb_header"
+    | "await_rdb_body"
+    | "stream_cmds" = "await_fullresync";
   let buf = Buffer.alloc(0);
   let rdbLen = 0;
 
@@ -389,7 +390,7 @@ function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
   const decoder = new RESPDecoder();
   const sink = blackholeSocket(); // handlers will write to this, which discards replies
 
-  sock.on('data', (chunk) => {
+  sock.on("data", (chunk) => {
     buf = Buffer.concat([buf, chunk] as any);
     processBuffer();
   });
@@ -398,21 +399,21 @@ function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
     parts: Parts,
     rawLen: number,
     state: ServerState,
-    sock: import('net').Socket
+    sock: import("net").Socket
   ) {
     if (!parts || parts.length === 0) return;
 
     const cmd = String(parts[0]).toUpperCase();
 
     if (
-      cmd === 'REPLCONF' &&
+      cmd === "REPLCONF" &&
       parts.length >= 3 &&
-      String(parts[1]).toUpperCase() === 'GETACK'
+      String(parts[1]).toUpperCase() === "GETACK"
     ) {
       // Reply with offset BEFORE counting this GETACK
       const ack = array([
-        bulkString('REPLCONF'),
-        bulkString('ACK'),
+        bulkString("REPLCONF"),
+        bulkString("ACK"),
         bulkString(String(state.replicaOffset ?? 0)),
       ]);
       sock.write(ack);
@@ -425,41 +426,41 @@ function startReplicaStreamConsumer(sock: net.Socket, state: ServerState) {
     // For any other command (e.g., PING, SET, etc.):
     // Count it first, then apply silently (no reply to master).
     state.replicaOffset = (state.replicaOffset ?? 0) + rawLen;
-    dispatchCommand(sink, parts, state, 'replication');
+    dispatchCommand(sink, parts, state, "replication");
   }
 
   function processBuffer() {
     while (true) {
-      if (phase === 'await_fullresync') {
+      if (phase === "await_fullresync") {
         const i = indexOfCrlf(buf);
         if (i < 0) return; // need more data
-        const line = buf.slice(0, i).toString('utf8'); // e.g., +FULLRESYNC <id> 0
+        const line = buf.slice(0, i).toString("utf8"); // e.g., +FULLRESYNC <id> 0
         buf = buf.slice(i + 2);
         // (We can optionally validate it starts with +FULLRESYNC)
-        phase = 'await_rdb_header';
+        phase = "await_rdb_header";
       }
 
-      if (phase === 'await_rdb_header') {
+      if (phase === "await_rdb_header") {
         // Need: $<len>\r\n
         if (buf.length < 4) return;
         if (buf[0] !== 0x24 /* '$' */) return; // malformed, but for this challenge assume correct
         const crlfAt = indexOfCrlf(buf);
         if (crlfAt < 0) return;
-        const lenStr = buf.slice(1, crlfAt).toString('ascii');
+        const lenStr = buf.slice(1, crlfAt).toString("ascii");
         rdbLen = Number(lenStr);
         buf = buf.slice(crlfAt + 2);
-        phase = 'await_rdb_body';
+        phase = "await_rdb_body";
       }
 
-      if (phase === 'await_rdb_body') {
+      if (phase === "await_rdb_body") {
         if (buf.length < rdbLen) return; // wait for full RDB body
         // Consume the RDB bytes (we ignore content; state is assumed empty)
         buf = buf.slice(rdbLen);
-        phase = 'stream_cmds';
+        phase = "stream_cmds";
         // loop to process any remaining bytes as commands
       }
 
-      if (phase === 'stream_cmds') {
+      if (phase === "stream_cmds") {
         // Feed whatever we have into the RESP decoder
         const frames = decoder.push(buf);
         buf = Buffer.alloc(0);
@@ -489,40 +490,40 @@ export function startReplicaLink(
     { host: replicaOf.host, port: replicaOf.port },
     () => {
       // 1) PING
-      master.write(array([bulkString('PING')]));
+      master.write(array([bulkString("PING")]));
     }
   );
   master.setNoDelay(true);
 
   // After PING response
-  master.once('data', () => {
+  master.once("data", () => {
     // 2a) REPLCONF listening-port <PORT>
     master.write(
       array([
-        bulkString('REPLCONF'),
-        bulkString('listening-port'),
+        bulkString("REPLCONF"),
+        bulkString("listening-port"),
         bulkString(String(listeningPort)),
       ])
     );
 
     // After OK to listening-port
-    master.once('data', () => {
+    master.once("data", () => {
       // 2b) REPLCONF capa eof capa psync2
       master.write(
         array([
-          bulkString('REPLCONF'),
-          bulkString('capa'),
-          bulkString('eof'),
-          bulkString('capa'),
-          bulkString('psync2'),
+          bulkString("REPLCONF"),
+          bulkString("capa"),
+          bulkString("eof"),
+          bulkString("capa"),
+          bulkString("psync2"),
         ])
       );
 
       // After OK to capa
-      master.once('data', () => {
+      master.once("data", () => {
         // 3) PSYNC ? -1
         master.write(
-          array([bulkString('PSYNC'), bulkString('?'), bulkString('-1')])
+          array([bulkString("PSYNC"), bulkString("?"), bulkString("-1")])
         );
 
         // --- From here: receive +FULLRESYNC <id> 0, then $<len>\r\n<bytes>, then commands ---
@@ -531,26 +532,26 @@ export function startReplicaLink(
     });
   });
 
-  master.on('error', () => {});
-  master.on('close', () => {});
+  master.on("error", () => {});
+  master.on("close", () => {});
 
   return master;
 }
 
 export function bufferFromHex(hex: string): Buffer {
-  const clean = hex.replace(/\s+/g, '').toLowerCase();
-  return Buffer.from(clean, 'hex');
+  const clean = hex.replace(/\s+/g, "").toLowerCase();
+  return Buffer.from(clean, "hex");
 }
 
 export function bufferFromBase64(b64: string): Buffer {
-  return Buffer.from(b64.replace(/\s+/g, ''), 'base64');
+  return Buffer.from(b64.replace(/\s+/g, ""), "base64");
 }
 
 /**
  * Send a raw-binary payload as: $<len>\r\n<bytes>
  * Note: no trailing CRLF after the bytes (this is NOT a RESP bulk string terminator).
  */
-export function sendBulkBytes(socket: import('net').Socket, bytes: Buffer) {
+export function sendBulkBytes(socket: import("net").Socket, bytes: Buffer) {
   const hdr = Buffer.from(`$${bytes.length}\r\n`);
   socket.write(Buffer.concat([hdr, bytes] as any) as any);
 }
@@ -566,9 +567,9 @@ export function encodeCommandForReplication(parts: Parts): string {
 export function sendGetAckToAllReplicas(state: ServerState) {
   if (!state.replicas) return;
   const payload = array([
-    bulkString('REPLCONF'),
-    bulkString('GETACK'),
-    bulkString('*'),
+    bulkString("REPLCONF"),
+    bulkString("GETACK"),
+    bulkString("*"),
   ]);
   for (const { socket } of state.replicas.values()) {
     try {
@@ -611,7 +612,7 @@ export function propagateToReplicas(
   parts: Parts,
   source?: Socket
 ) {
-  if (state.role !== 'master') return;
+  if (state.role !== "master") return;
   if (!state.replicas || state.replicas.size === 0) return;
 
   const payload = encodeCommandForReplication(parts);
@@ -629,9 +630,9 @@ export function propagateToReplicas(
 
 export function isWriteCommand(cmd: string): boolean {
   switch (cmd) {
-    case 'SET':
-    case 'DEL':
-    case 'XADD':
+    case "SET":
+    case "DEL":
+    case "XADD":
       // add others as you implement replication for them
       return true;
     default:
@@ -644,4 +645,8 @@ export function blackholeSocket(): Socket {
   return {
     write: (_chunk: any) => true,
   } as Socket;
+}
+
+export function sha256Hex(s: string): string {
+  return createHash("sha256").update(s, "utf8").digest("hex"); // lowercase hex
 }

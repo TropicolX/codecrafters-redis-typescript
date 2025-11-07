@@ -1,9 +1,14 @@
-import type { Socket } from 'node:net';
+import type { Socket } from "node:net";
+
+export interface AclUser {
+  flags: Set<string>; // e.g., "nopass"
+  passwords: string[]; // sha256 hex strings
+}
 
 // Store can hold strings (with optional expiry) or lists.
 export type Entry =
-  | { type: 'string'; value: string; expiresAt?: number }
-  | { type: 'list'; value: string[]; expiresAt?: number };
+  | { type: "string"; value: string; expiresAt?: number }
+  | { type: "list"; value: string[]; expiresAt?: number };
 
 export type StreamEntry = { id: string; fields: Array<[string, string]> };
 export type Stream = { entries: StreamEntry[] };
@@ -18,7 +23,7 @@ export type Waiter = {
 export type ParsedId = { ms: bigint; seq: bigint };
 
 export type XReadWaiter = {
-  socket: import('net').Socket;
+  socket: import("net").Socket;
   keys: string[];
   starts: ParsedId[]; // one per key, exclusive start
   timer?: NodeJS.Timeout;
@@ -26,7 +31,7 @@ export type XReadWaiter = {
 
 export type Parts = (string | null)[];
 
-export type Role = 'master' | 'slave';
+export type Role = "master" | "slave";
 
 export interface ReplicaOfConfig {
   host: string;
@@ -53,6 +58,9 @@ export interface ServerState {
   replicas?: Map<Socket, ReplicaLink>;
   replicaOffset?: number;
   waiters?: Set<WaitRequest>;
+  acl: {
+    users: Map<string, AclUser>;
+  };
 }
 
 export interface ReplicaOfConfig {

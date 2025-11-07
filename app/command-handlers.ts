@@ -25,6 +25,7 @@ import {
   sendBulkBytes,
   sendGetAckToAllReplicas,
   serveWaitersForKey,
+  sha256Hex,
   simpleString,
   unregisterWaiter,
 } from "./utils";
@@ -876,31 +877,102 @@ export function WAIT(socket: Socket, parts: Parts, state: ServerState) {
   state.waiters.add(waiter);
 }
 
-export function ACL(socket: Socket, parts: Parts, _state: ServerState) {
+export function ACL(socket: Socket, parts: Parts, state: ServerState) {
   const sub = parts[1] ? String(parts[1]).toUpperCase() : "";
 
+  // ACL WHOAMI
   if (sub === "WHOAMI") {
     socket.write(bulkString("default"));
     return;
   }
 
+  // ACL GETUSER <username>
   if (sub === "GETUSER") {
-    // Expect: ACL GETUSER <username> (tester uses "default")
     if (parts.length < 3) {
       socket.write(
         errorString("ERR wrong number of arguments for 'ACL|GETUSER'")
       );
       return;
     }
+    const username = String(parts[2]);
+    const user = state.acl.users.get(username);
+    if (!user) {
+      // Real Redis returns (nil). For this stage, an empty user is fine or error out.
+      // We'll mimic Redis-ish behavior with an empty flags/passwords:
+      const resp = array([
+        bulkString("flags"),
+        array([]),
+        bulkString("passwords"),
+        array([]),
+      ]);
+      socket.write(resp);
+      return;
+    }
 
-    // RESP: ["flags", ["nopass"], "passwords", []]
+    // Build: ["flags", [...flags], "passwords", [...hashes]]
+    const flagsArr = Array.from(user.flags);
+    const passwordsArr = user.passwords;
+
     const resp = array([
       bulkString("flags"),
-      array([bulkString("nopass")]),
+      array(flagsArr.map((f) => bulkString(f))),
       bulkString("passwords"),
-      array([]), // empty array
+      array(passwordsArr.map((h) => bulkString(h))),
     ]);
     socket.write(resp);
+    return;
+  }
+
+  // ACL SETUSER <username> >password [>password2 ...]   (stage: just support >plain)
+  if (sub === "SETUSER") {
+    if (parts.length < 4) {
+      socket.write(
+        errorString("ERR wrong number of arguments for 'ACL|SETUSER'")
+      );
+      return;
+    }
+    const username = String(parts[2]);
+    let user = state.acl.users.get(username);
+    if (!user) {
+      // In Redis, SETUSER can create, but for this stage we only need "default"
+      if (username !== "default") {
+        socket.write(
+          errorString("ERR only default user supported in this stage")
+        );
+        return;
+      }
+      user = { flags: new Set(["nopass"]), passwords: [] };
+      state.acl.users.set(username, user);
+    }
+
+    // Process rules: tokens starting from parts[3]
+    // We support only >password form for now (add hash, clear nopass).
+    let anyPasswordAdded = false;
+    for (let i = 3; i < parts.length; i++) {
+      const token = String(parts[i]);
+      if (token.startsWith(">")) {
+        const plain = token.slice(1); // "mypassword"
+        if (!plain) {
+          socket.write(errorString("ERR empty password not allowed"));
+          return;
+        }
+        const hash = sha256Hex(plain);
+        // avoid duplicates
+        if (!user.passwords.includes(hash)) {
+          user.passwords.push(hash);
+        }
+        anyPasswordAdded = true;
+      } else {
+        // For this stage, ignore other rules (like on/off, resetpass, etc.)
+        // Optionally: validate/err. We'll ignore silently.
+      }
+    }
+
+    if (anyPasswordAdded) {
+      user.flags.delete("nopass"); // adding a password clears nopass
+    }
+
+    socket.write(simpleString("OK"));
     return;
   }
 
