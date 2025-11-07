@@ -885,15 +885,16 @@ export function ACL(socket: Socket, parts: Parts, _state: ServerState) {
   }
 
   if (sub === "GETUSER") {
-    // Expect: ACL GETUSER <username>  (the tester uses "default")
+    // Expect: ACL GETUSER <username> (tester uses "default")
     if (parts.length < 3) {
       socket.write(
         errorString("ERR wrong number of arguments for 'ACL|GETUSER'")
       );
       return;
     }
-    // For this stage, username is ignored and we hardcode an empty flags array.
-    const resp = array([bulkString("flags"), array([])]);
+
+    // For this stage, always return: ["flags", ["nopass"]]
+    const resp = array([bulkString("flags"), array([bulkString("nopass")])]);
     socket.write(resp);
     return;
   }
